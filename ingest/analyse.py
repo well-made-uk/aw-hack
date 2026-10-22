@@ -1,0 +1,226 @@
+"""Analyse a folder of music into out/tracks.jsonl for upload to VectorsDB.
+
+For each track: a 512-d CLAP audio embedding (the "sound fingerprint"),
+plus title/artist/genre, BPM and key. BPM and key come from file tags when
+present (Rekordbox / Mixed In Key usually write them), else are estimated.
+
+Usage:
+    python analyse.py ~/Music/crate --out ../out/tracks.jsonl
+"""
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+import librosa
+import mutagen
+import numpy as np
+import torch
+from transformers import ClapModel, ClapProcessor
+
+MODEL_ID = "laion/larger_clap_music"
+SAMPLE_RATE = 48_000  # CLAP expects 48 kHz
+WINDOW_SECONDS = 10
+WINDOW_POSITIONS = (0.25, 0.5, 0.75)  # skip DJ intros/outros
+AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif", ".m4a", ".ogg"}
+
+# Camelot wheel: (pitch class, is_minor) -> code. C=0 … B=11.
+CAMELOT = {
+    (11, False): "1B", (8, True): "1A",
+    (6, False): "2B", (3, True): "2A",
+    (1, False): "3B", (10, True): "3A",
+    (8, False): "4B", (5, True): "4A",
+    (3, False): "5B", (0, True): "5A",
+    (10, False): "6B", (7, True): "6A",
+    (5, False): "7B", (2, True): "7A",
+    (0, False): "8B", (9, True): "8A",
+    (7, False): "9B", (4, True): "9A",
+    (2, False): "10B", (11, True): "10A",
+    (9, False): "11B", (6, True): "11A",
+    (4, False): "12B", (1, True): "12A",
+}
+CAMELOT_TO_KEY = {v: k for k, v in CAMELOT.items()}
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+NOTE_ALIASES = {"DB": "C#", "EB": "D#", "GB": "F#", "AB": "G#", "BB": "A#"}
+
+# Krumhansl-Schmuckler key profiles, for estimating key from chroma.
+MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+
+def key_name(pitch, minor):
+    return f"{NOTE_NAMES[pitch]} {'minor' if minor else 'major'}"
+
+
+def parse_key_tag(raw):
+    """Turn a key tag ("8A", "Am", "F#m", "A minor") into (pitch, is_minor)."""
+    s = raw.strip().upper().replace("♯", "#").replace("♭", "B")
+    if re.fullmatch(r"(1[0-2]|[1-9])[AB]", s):
+        return CAMELOT_TO_KEY[s]
+    m = re.fullmatch(r"([A-G])([#B]?)\s*(M|MIN|MINOR|MAJ|MAJOR)?", s)
+    if not m:
+        return None
+    note = m.group(1) + m.group(2)
+    note = NOTE_ALIASES.get(note, note)
+    if note not in NOTE_NAMES:
+        return None
+    minor = m.group(3) in ("M", "MIN", "MINOR")
+    return NOTE_NAMES.index(note), minor
+
+
+def read_tags(path):
+    """Best-effort title/artist/genre/bpm/key from whatever tag format the file has."""
+    tags = {}
+    try:
+        easy = mutagen.File(path, easy=True)
+        if easy and easy.tags:
+            for field in ("title", "artist", "album", "genre", "bpm"):
+                if easy.tags.get(field):
+                    tags[field] = str(easy.tags[field][0])
+        raw = mutagen.File(path)
+        if raw and raw.tags:
+            for k, v in raw.tags.items():
+                # TKEY (ID3), TXXX:INITIALKEY, initialkey (FLAC), ----:…:initialkey (MP4)
+                if "key" in str(k).lower():
+                    value = v.text[0] if hasattr(v, "text") else v
+                    if isinstance(value, list):
+                        value = value[0]
+                    if isinstance(value, bytes):
+                        value = value.decode(errors="ignore")
+                    if str(value).strip():
+                        tags.setdefault("key", str(value))
+    except Exception as e:  # unreadable tags shouldn't stop the run
+        print(f"  tags unreadable: {e}", file=sys.stderr)
+    return tags
+
+
+def estimate_bpm(y, sr):
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    bpm = float(np.atleast_1d(tempo)[0])
+    # Fold half/double-time guesses into the usual DJ range.
+    while bpm and bpm < 80:
+        bpm *= 2
+    while bpm > 180:
+        bpm /= 2
+    return bpm
+
+
+def estimate_key(y, sr):
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr).mean(axis=1)
+    best = None
+    for pitch in range(12):
+        for minor, profile in ((False, MAJOR_PROFILE), (True, MINOR_PROFILE)):
+            score = np.corrcoef(chroma, np.roll(profile, pitch))[0, 1]
+            if best is None or score > best[0]:
+                best = (score, pitch, minor)
+    return best[1], best[2]
+
+
+def clap_windows(path, duration):
+    """Load a few 10 s windows at 48 kHz from across the track."""
+    windows = []
+    for pos in WINDOW_POSITIONS:
+        offset = max(0.0, duration * pos - WINDOW_SECONDS / 2)
+        y, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True, offset=offset, duration=WINDOW_SECONDS)
+        if len(y) >= SAMPLE_RATE:  # skip windows under 1 s
+            windows.append(y)
+    return windows
+
+
+def embed(model, processor, windows):
+    try:
+        inputs = processor(audio=windows, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+    except TypeError:  # older transformers name the argument `audios`
+        inputs = processor(audios=windows, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+    with torch.no_grad():
+        feats = model.get_audio_features(**inputs)
+    vec = feats.mean(dim=0).numpy()
+    return (vec / np.linalg.norm(vec)).astype(float)
+
+
+def track_id(rel_path):
+    # Appwrite IDs: max 36 chars, a-z0-9. Stable per file so re-runs update.
+    return hashlib.sha1(rel_path.encode()).hexdigest()[:32]
+
+
+def analyse(path, root, model, processor):
+    duration = librosa.get_duration(path=path)
+    tags = read_tags(path)
+
+    # 60 s from the middle at 22 kHz is enough for BPM/key estimates.
+    mid, _ = librosa.load(path, sr=22_050, mono=True, offset=max(0.0, duration / 2 - 30), duration=60)
+
+    bpm, bpm_source = None, "tags"
+    try:
+        bpm = float(tags["bpm"])
+    except (KeyError, ValueError):
+        pass
+    if not bpm:
+        bpm, bpm_source = estimate_bpm(mid, 22_050), "estimated"
+
+    parsed = parse_key_tag(tags["key"]) if "key" in tags else None
+    key_source = "tags"
+    if parsed is None:
+        parsed, key_source = estimate_key(mid, 22_050), "estimated"
+    pitch, minor = parsed
+
+    rel = str(path.relative_to(root))
+    return {
+        "id": track_id(rel),
+        "embeddings": embed(model, processor, clap_windows(path, duration)).tolist(),
+        "metadata": {
+            "title": tags.get("title") or path.stem,
+            "artist": tags.get("artist", ""),
+            "album": tags.get("album", ""),
+            "genre": tags.get("genre", ""),
+            "bpm": round(bpm, 1),
+            "bpm_int": str(round(bpm)),
+            "key": key_name(pitch, minor),
+            "camelot": CAMELOT[(pitch, minor)],
+            "duration": round(duration, 1),
+            "bpm_source": bpm_source,
+            "key_source": key_source,
+            "file": rel,
+        },
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("folder", type=Path)
+    parser.add_argument("--out", type=Path, default=Path("../out/tracks.jsonl"))
+    parser.add_argument("--limit", type=int, help="only analyse the first N tracks (for testing)")
+    args = parser.parse_args()
+
+    root = args.folder.expanduser().resolve()
+    files = sorted(p for p in root.rglob("*") if p.suffix.lower() in AUDIO_EXTS)
+    if args.limit:
+        files = files[: args.limit]
+
+    # Skip tracks already in the output, so a long run can be resumed.
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    done = set()
+    if args.out.exists():
+        done = {json.loads(line)["id"] for line in args.out.open() if line.strip()}
+
+    print(f"Loading {MODEL_ID}…")
+    model = ClapModel.from_pretrained(MODEL_ID).eval()
+    processor = ClapProcessor.from_pretrained(MODEL_ID)
+
+    with args.out.open("a") as out:
+        for i, path in enumerate(files, 1):
+            if track_id(str(path.relative_to(root))) in done:
+                continue
+            print(f"[{i}/{len(files)}] {path.name}")
+            try:
+                out.write(json.dumps(analyse(path, root, model, processor)) + "\n")
+                out.flush()
+            except Exception as e:
+                print(f"  skipped: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

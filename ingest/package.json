@@ -1,0 +1,11 @@
+{
+  "name": "nexttrack-ingest",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "upload": "node --env-file=../.env upload.mjs ../out/tracks.jsonl"
+  },
+  "dependencies": {
+    "node-appwrite": "latest"
+  }
+}

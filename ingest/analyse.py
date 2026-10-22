@@ -16,7 +16,10 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import librosa
@@ -192,12 +195,14 @@ def track_id(rel_path):
     return hashlib.sha1(rel_path.encode()).hexdigest()[:32]
 
 
-def analyse(path, root, model, processor):
-    duration = librosa.get_duration(path=path)
+def analyse(path, root, model, processor, audio=None):
+    # `audio` is what gets decoded; tags and the ID always come from the original file.
+    audio = audio or path
+    duration = librosa.get_duration(path=audio)
     tags = read_tags(path)
 
     # 60 s from the middle at 22 kHz is enough for BPM/key estimates.
-    mid, _ = librosa.load(path, sr=22_050, mono=True, offset=max(0.0, duration / 2 - 30), duration=60)
+    mid, _ = librosa.load(audio, sr=22_050, mono=True, offset=max(0.0, duration / 2 - 30), duration=60)
 
     bpm, bpm_source = None, "tags"
     try:
@@ -214,12 +219,12 @@ def analyse(path, root, model, processor):
         parsed, key_source = estimate_key(mid, 22_050), "estimated"
     pitch, minor = parsed
 
-    peak = energy_peak(path, duration)
+    peak = energy_peak(audio, duration)
 
     rel = str(path.relative_to(root))
     return {
         "id": track_id(rel),
-        "embeddings": embed(model, processor, clap_windows(path, duration, peak["peak_at"])).tolist(),
+        "embeddings": embed(model, processor, clap_windows(audio, duration, peak["peak_at"])).tolist(),
         "metadata": {
             "title": tags.get("title") or path.stem,
             "artist": tags.get("artist", ""),
@@ -237,6 +242,21 @@ def analyse(path, root, model, processor):
             "analysis": ANALYSIS_VERSION,
         },
     }
+
+
+def analyse_via_wav(path, root, model, processor):
+    # Some MP3s have stream quirks the default decoder can't seek past. ffmpeg decodes them
+    # fine, so convert to a temporary WAV (outside the music folder) and analyse that.
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not installed (brew install ffmpeg)")
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "track.wav"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", "44100", str(wav)],
+            check=True,
+            capture_output=True,
+        )
+        return analyse(path, root, model, processor, audio=wav)
 
 
 def main():
@@ -281,7 +301,12 @@ def main():
                 continue
             print(f"[{i}/{total}] {path.name}", flush=True)
             try:
-                out.write(json.dumps(analyse(path, root, model, processor)) + "\n")
+                try:
+                    row = analyse(path, root, model, processor)
+                except Exception as e:
+                    print(f"  decode failed ({e}), retrying via ffmpeg", file=sys.stderr)
+                    row = analyse_via_wav(path, root, model, processor)
+                out.write(json.dumps(row) + "\n")
                 out.flush()
             except Exception as e:
                 print(f"  skipped: {e}", file=sys.stderr)

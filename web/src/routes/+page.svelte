@@ -373,7 +373,7 @@
 	// changed and Next is clicked, step 4 on Complete. Finishing or closing it is remembered.
 	const TOUR_KEY = 'nexttrack:tour-done';
 	let tourStep = $state(0);
-	let tourFrom = { id: /** @type {string | null} */ (null), filters: '' };
+	let tourFrom = $state.raw({ id: /** @type {string | null} */ (null), filters: '' });
 	const filters = $derived(`${tolerance}|${keyMode}|${energy}`);
 
 	/** @param {number} step */

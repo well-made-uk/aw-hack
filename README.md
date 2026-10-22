@@ -17,7 +17,8 @@ BPM and Camelot-key filters.
 cd ingest
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python analyse.py ~/Music/crate --limit 50   # writes ../out/tracks.jsonl
+python analyse.py ~/Music/crate --range 1-100   # appends to ../out/tracks.jsonl
+python analyse.py ~/Music/crate --range 101-200 # already-analysed tracks are skipped
 
 # 2. Upload fingerprints + metadata to VectorsDB
 cp ../.env.example ../.env   # fill in project ID, API key, IDs

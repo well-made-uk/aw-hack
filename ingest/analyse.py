@@ -6,6 +6,10 @@ present (Rekordbox / Mixed In Key usually write them), else are estimated.
 
 Usage:
     python analyse.py ~/Music/crate --out ../out/tracks.jsonl
+    python analyse.py ~/Music/crate --range 101-200   # tracks 101 to 200, in sorted path order
+
+Tracks already in the output file are skipped, so runs can be split up or resumed
+without redoing or overwriting anything.
 """
 
 import argparse
@@ -199,10 +203,17 @@ def main():
     parser.add_argument("folder", type=Path)
     parser.add_argument("--out", type=Path, default=Path("../out/tracks.jsonl"))
     parser.add_argument("--limit", type=int, help="only analyse the first N tracks (for testing)")
+    parser.add_argument("--range", help="only analyse tracks START-END (1-based, inclusive), e.g. 101-200")
     args = parser.parse_args()
 
     root = args.folder.expanduser().resolve()
     files = sorted(p for p in root.rglob("*") if p.suffix.lower() in AUDIO_EXTS)
+    total = len(files)
+    first = 1
+    if args.range:
+        start, _, end = args.range.partition("-")
+        first = int(start)
+        files = files[first - 1 : int(end) if end else total]
     if args.limit:
         files = files[: args.limit]
 
@@ -217,10 +228,11 @@ def main():
     processor = ClapProcessor.from_pretrained(MODEL_ID)
 
     with args.out.open("a") as out:
-        for i, path in enumerate(files, 1):
+        for i, path in enumerate(files, first):
             if track_id(str(path.relative_to(root))) in done:
+                print(f"[{i}/{total}] {path.name} (already analysed)")
                 continue
-            print(f"[{i}/{len(files)}] {path.name}")
+            print(f"[{i}/{total}] {path.name}")
             try:
                 out.write(json.dumps(analyse(path, root, model, processor)) + "\n")
                 out.flush()

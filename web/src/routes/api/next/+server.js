@@ -9,8 +9,8 @@ export async function GET({ url }) {
 	const energy = /** @type {any} */ (url.searchParams.get('energy') ?? 'any');
 	const tolerance = Number(url.searchParams.get('tol') ?? 6);
 
-	const unfiltered = url.searchParams.has('all');
-	const result = await nextTracks(id, unfiltered ? { unfiltered, limit: 100 } : { keyMode, energy, tolerance, limit: 20 });
+	const limit = Math.min(100, Number(url.searchParams.get('limit') ?? 20));
+	const result = await nextTracks(id, { keyMode, energy, tolerance, limit });
 	if (!result) error(404, 'Track not found');
 	return json(result);
 }

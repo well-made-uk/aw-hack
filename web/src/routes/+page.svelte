@@ -1,10 +1,9 @@
 <script>
 	import Record from '#lib/components/Record.svelte';
-	import LabelArt from '#lib/components/LabelArt.svelte';
 	import Suggestion from '#lib/components/Suggestion.svelte';
 	import Controls from '#lib/components/Controls.svelte';
 	import TrackCard from '#lib/components/TrackCard.svelte';
-	import { compatibleKeys, energyLevels, keyAngle, mixableBpms } from '#lib/camelot.js';
+	import { compatibleKeys, keyAngle } from '#lib/camelot.js';
 
 	/** @typedef {import('#lib/server/tracks.js').Track} Track */
 	/** @typedef {Track & { match: number }} Suggested */
@@ -43,7 +42,7 @@
 	let stageWidth = $state(640);
 	let stageHeight = $state(0);
 
-	// Crate "sort by match": the whole crate ranked by sound against the playing track.
+	// Crate "match" mode: only tracks that pass the pitch / key / energy controls, ranked by sound.
 	let sortByMatch = $state(false);
 	/** @type {Map<string, number>} */
 	let crateMatches = $state(new Map());
@@ -249,31 +248,21 @@
 	$effect(() => {
 		if (!sortByMatch || !playingId) return;
 		const id = playingId;
-		fetch(`/api/next?${new URLSearchParams({ id, all: '1' })}`)
+		const params = new URLSearchParams({ id, keys: keyMode, energy, tol: String(tolerance), limit: '100' });
+		fetch(`/api/next?${params}`)
 			.then((r) => r.json())
 			.then((/** @type {{ suggestions: Suggested[] }} */ d) => {
 				if (id === playingId) crateMatches = new Map(d.suggestions.map((s) => [s.id, s.match]));
 			});
 	});
 
-	/** Would this track mix in with the current pitch, key and energy settings? @param {Track} t */
-	function mixable(t) {
-		if (!playing || t.id === playing.id) return false;
-		const keys = compatibleKeys(playing.camelot, keyMode);
-		const levels = energyLevels(playing.energy, energy);
-		return (
-			(!keys || keys.includes(t.camelot)) &&
-			(!levels || levels.includes(String(t.energy))) &&
-			mixableBpms(playing.bpm, tolerance).includes(String(Math.round(t.bpm)))
-		);
-	}
-
-	const sorting = $derived(sortByMatch && Boolean(playing) && crateMatches.size > 0);
+	const sorting = $derived(sortByMatch && Boolean(playing));
 	const crate = $derived.by(() => {
 		const found = tracks.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()));
 		if (!sorting) return found;
-		// Best matches first; tracks outside the top results keep crate order after them.
-		return found.toSorted((a, b) => (crateMatches.get(b.id) ?? -1) - (crateMatches.get(a.id) ?? -1));
+		return found
+			.filter((t) => crateMatches.has(t.id))
+			.sort((a, b) => (crateMatches.get(b.id) ?? 0) - (crateMatches.get(a.id) ?? 0));
 	});
 </script>
 
@@ -414,7 +403,7 @@
 						onpointerenter={(e) => hoverOn(t, e.currentTarget)}
 						onpointerleave={hoverOff}
 					>
-						<svg viewBox="-50 -50 100 100" width="52" height="52" aria-hidden="true"><LabelArt sig={t.sig} r={50} /></svg>
+						<Record sig={t.sig} size={56} spinning={previewId === t.id} />
 					</span>
 					<span class="set-text">
 						<span class="set-n">{i + 1}</span>
@@ -433,7 +422,7 @@
 						onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
 						onpointerleave={hoverOff}
 					>
-						<svg viewBox="-50 -50 100 100" width="52" height="52" aria-hidden="true"><LabelArt sig={playing.sig} r={50} /></svg>
+						<Record sig={playing.sig} size={56} spinning />
 					</span>
 					<span class="set-text">
 						<span class="set-n">On deck</span>
@@ -456,7 +445,7 @@
 					<label class="sort">
 						<input type="checkbox" bind:checked={sortByMatch} />
 						<span class="switch" aria-hidden="true"></span>
-						Sort by match to <strong>{playing.title}</strong>
+						Mixable matches for <strong>{playing.title}</strong>
 					</label>
 					<button class="close" onclick={() => (crateOpen = false)} aria-label="Close">✕</button>
 				{/if}
@@ -468,6 +457,9 @@
 				</div>
 			{:else}
 				<div class="sleeves">
+					{#if sorting && !crate.length}
+						<p class="no-matches">No mixable tracks with these settings. Widen the pitch range, key match or energy →</p>
+					{/if}
 					{#each crate as t (t.id)}
 						<button
 							class="sleeve"
@@ -486,9 +478,7 @@
 							{#if t.id === playing?.id}
 								<span class="sleeve-badge on-deck">On deck</span>
 							{:else if sorting && crateMatches.has(t.id)}
-								<span class="sleeve-badge" class:mix={mixable(t)}>
-									{Math.round((crateMatches.get(t.id) ?? 0) * 100)}%{mixable(t) ? ' · mixable' : ''}
-								</span>
+								<span class="sleeve-badge mix">{Math.round((crateMatches.get(t.id) ?? 0) * 100)}%</span>
 							{/if}
 						</button>
 					{/each}
@@ -773,14 +763,8 @@
 	.set-art {
 		flex: none;
 		display: block;
-		width: 52px;
-		height: 52px;
-		border-radius: 8px;
-		overflow: hidden;
-		border: 2px solid var(--ink);
-	}
-	.set-art svg {
-		display: block;
+		width: 56px;
+		height: 56px;
 	}
 	.set-text {
 		display: grid;
@@ -893,9 +877,10 @@
 		}
 	}
 
+	/* Leaves the control panel visible on desktop, so filters can be changed while digging. */
 	.crate {
 		position: fixed;
-		inset: auto 0 0 0;
+		inset: auto 268px 0 0;
 		height: min(78vh, 720px);
 		background: var(--yellow);
 		border-top: 4px solid var(--ink);
@@ -1022,6 +1007,12 @@
 		background: var(--orange);
 		color: var(--paper);
 	}
+	.no-matches {
+		grid-column: 1 / -1;
+		margin: 0;
+		font-weight: 700;
+		font-size: 18px;
+	}
 	.sort {
 		display: flex;
 		align-items: center;
@@ -1076,6 +1067,9 @@
 	}
 
 	@media (max-width: 1000px) {
+		.crate {
+			right: 0;
+		}
 		.page {
 			height: auto;
 			min-height: 100vh;

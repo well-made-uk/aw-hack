@@ -19,7 +19,7 @@ import { demoTracks } from './demo.js';
  * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number, energy?: number, peak_at?: number, file?: string }} TrackMeta
  * @typedef {{ id: string, embeddings: number[], metadata: TrackMeta }} StoredTrack
  * @typedef {TrackMeta & { id: string, sig: number[] }} Track
- * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number, unfiltered?: boolean }} NextOptions
+ * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number }} NextOptions
  */
 
 const live = Boolean(APPWRITE_PROJECT_ID && APPWRITE_API_KEY);
@@ -113,15 +113,14 @@ export async function listTracks() {
  * @param {string} id
  * @param {NextOptions} opts
  */
-export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy = 'any', limit = 12, unfiltered = false } = {}) {
+export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy = 'any', limit = 20 } = {}) {
 	const stored = await allStored();
 	const playing = await getStored(id);
 	if (!playing) return null;
 
-	// `unfiltered` ranks the whole crate purely by sound, for the crate's "sort by match".
-	const keys = unfiltered ? null : compatibleKeys(playing.metadata.camelot, keyMode);
-	const bpms = unfiltered ? null : mixableBpms(playing.metadata.bpm, tolerance);
-	const levels = unfiltered ? null : energyLevels(playing.metadata.energy, energy);
+	const keys = compatibleKeys(playing.metadata.camelot, keyMode);
+	const bpms = mixableBpms(playing.metadata.bpm, tolerance);
+	const levels = energyLevels(playing.metadata.energy, energy);
 
 	/** @type {{ track: StoredTrack, distance: number }[]} */
 	let results;
@@ -131,7 +130,7 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 			Query.notEqual('$id', id),
 			Query.limit(limit)
 		];
-		if (bpms) queries.push(Query.equal('metadata.bpm_int', bpms));
+		queries.push(Query.equal('metadata.bpm_int', bpms));
 		if (keys) queries.push(Query.equal('metadata.camelot', keys));
 		if (levels) queries.push(Query.equal('metadata.energy_level', levels));
 		// createQuery sends queries in the body; a 512-d vector is too long for listDocuments' URL.
@@ -140,7 +139,7 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 	} else {
 		results = stored
 			.filter((t) => t.id !== id)
-			.filter((t) => !bpms || bpms.includes(String(Math.round(t.metadata.bpm))))
+			.filter((t) => bpms.includes(String(Math.round(t.metadata.bpm))))
 			.filter((t) => !keys || keys.includes(t.metadata.camelot))
 			.filter((t) => !levels || levels.includes(String(t.metadata.energy)))
 			.map((t) => ({ track: t, distance: 1 - dot(t.embeddings, playing.embeddings) }))

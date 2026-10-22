@@ -44,11 +44,11 @@ Index on `embeddings`, type `hnsw_cosine`, queried with `Query.vectorCosine`.
 | Field | Example | Notes |
 |---|---|---|
 | `$id` | `3f9a…` | sha1 of the file's relative path, so re-runs update instead of duplicating |
-| `embeddings` | `[0.012, …]` | 512 floats, L2-normalised mean of 3 × 10 s CLAP windows |
+| `embeddings` | `[0.012, …]` | 512 floats: mean of 3 × 10 s CLAP windows, centred on the crate's mean vector and L2-normalised (spreads similarities so % match means something) |
 | `metadata.title` | `Rolling Thunder` | from tags, else file name |
 | `metadata.artist` | `…` | |
 | `metadata.genre` | `Minimal` | |
-| `metadata.bpm` | `126.0` | float, for display |
+| `metadata.bpm` | `126.0` | float, for display; half/double-time folded into 80–180 |
 | `metadata.bpm_int` | `"126"` | string, for `Query.equal` filters (VectorsDB filter values must be strings) |
 | `metadata.camelot` | `"8A"` | for harmonic-mixing filters |
 | `metadata.key` | `"A minor"` | for display |

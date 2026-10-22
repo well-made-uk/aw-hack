@@ -97,15 +97,18 @@ def read_tags(path):
     return tags
 
 
-def estimate_bpm(y, sr):
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-    bpm = float(np.atleast_1d(tempo)[0])
-    # Fold half/double-time guesses into the usual DJ range.
+def fold_bpm(bpm):
+    # Fold half/double-time values (from tags or estimates) into the usual DJ range.
     while bpm and bpm < 80:
         bpm *= 2
     while bpm > 180:
         bpm /= 2
     return bpm
+
+
+def estimate_bpm(y, sr):
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    return float(np.atleast_1d(tempo)[0])
 
 
 def estimate_key(y, sr):
@@ -137,6 +140,8 @@ def embed(model, processor, windows):
         inputs = processor(audios=windows, sampling_rate=SAMPLE_RATE, return_tensors="pt")
     with torch.no_grad():
         feats = model.get_audio_features(**inputs)
+    if not torch.is_tensor(feats):  # transformers 5 returns a ModelOutput
+        feats = feats.pooler_output
     vec = feats.mean(dim=0).numpy()
     return (vec / np.linalg.norm(vec)).astype(float)
 
@@ -160,6 +165,7 @@ def analyse(path, root, model, processor):
         pass
     if not bpm:
         bpm, bpm_source = estimate_bpm(mid, 22_050), "estimated"
+    bpm = fold_bpm(bpm)
 
     parsed = parse_key_tag(tags["key"]) if "key" in tags else None
     key_source = "tags"

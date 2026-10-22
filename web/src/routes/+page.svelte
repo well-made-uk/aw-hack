@@ -880,16 +880,17 @@
 	/* Leaves the control panel visible on desktop, so filters can be changed while digging. */
 	.crate {
 		position: fixed;
-		inset: auto 268px 0 0;
+		inset: auto 268px 0 28px;
 		height: min(78vh, 720px);
 		background: var(--yellow);
-		border-top: 4px solid var(--ink);
+		border: 4px solid var(--ink);
+		border-bottom: 0;
 		border-radius: 36px 36px 0 0;
 		box-shadow: 0 -10px 0 #1a142322;
-		padding: 24px 28px;
+		padding: 24px 28px 0;
 		display: grid;
-		grid-template-rows: auto 1fr;
-		gap: 18px;
+		grid-template-rows: auto minmax(0, 1fr);
+		gap: 4px;
 		z-index: 30;
 		animation: slide-up 0.5s cubic-bezier(0.3, 1.3, 0.5, 1);
 	}
@@ -936,7 +937,8 @@
 		grid-auto-rows: max-content;
 		gap: 22px;
 		overflow-y: auto;
-		padding: 6px 6px 30px;
+		/* Room above for the hover lift and tilt, and below so the last row scrolls fully into view. */
+		padding: 22px 10px 28px 6px;
 	}
 	.sleeve {
 		position: relative;
@@ -1068,7 +1070,10 @@
 
 	@media (max-width: 1000px) {
 		.crate {
+			left: 0;
 			right: 0;
+			border-left: 0;
+			border-right: 0;
 		}
 		.page {
 			height: auto;

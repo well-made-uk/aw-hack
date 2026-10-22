@@ -186,6 +186,40 @@
 		crateOpen = false;
 	}
 
+	// Export: the set so far, with the track on deck last.
+	let exportOpen = $state(false);
+	let copied = $state(false);
+	const fullSet = $derived(playing ? [...setlist, playing] : setlist);
+	/** @param {Track} t */
+	const credit = (t) => `${t.artist ? `${t.artist} – ` : ''}${t.title}`;
+
+	function setAsText() {
+		return fullSet.map((t, i) => `${i + 1}. ${credit(t)} (${Math.round(t.bpm)} BPM, ${t.camelot})`).join('\n');
+	}
+
+	function setAsCsv() {
+		/** @param {unknown} v */
+		const cell = (v) => (/[",\n]/.test(String(v ?? '')) ? `"${String(v).replace(/"/g, '""')}"` : String(v ?? ''));
+		const rows = fullSet.map((t, i) => [i + 1, t.artist, t.title, Math.round(t.bpm), t.camelot, t.key, t.energy]);
+		return [['#', 'Artist', 'Title', 'BPM', 'Camelot', 'Key', 'Energy'], ...rows].map((r) => r.map(cell).join(',')).join('\n');
+	}
+
+	/** @param {string} text @param {string} name @param {string} type */
+	function download(text, name, type) {
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(new Blob([text], { type }));
+		a.download = name;
+		a.click();
+		URL.revokeObjectURL(a.href);
+		exportOpen = false;
+	}
+
+	async function copySet() {
+		await navigator.clipboard.writeText(setAsText());
+		copied = true;
+		setTimeout(() => ((copied = false), (exportOpen = false)), 900);
+	}
+
 	// Set list editing: remove, and drag to reorder (the track on deck stays last).
 	/** @param {number} i */
 	function removeFromSet(i) {
@@ -340,7 +374,16 @@
 	});
 </script>
 
-<svelte:window onpointerdown={unlockPreviews} onkeydown={unlockPreviews} />
+<svelte:window
+	onpointerdown={(e) => {
+		unlockPreviews();
+		if (exportOpen && !(/** @type {Element} */ (e.target).closest('.set-head'))) exportOpen = false;
+	}}
+	onkeydown={(e) => {
+		unlockPreviews();
+		if (e.key === 'Escape') exportOpen = false;
+	}}
+/>
 
 <audio bind:this={audio} preload="none" onerror={() => (previewId = null)}></audio>
 
@@ -459,7 +502,24 @@
 	</main>
 
 	<footer class="setlist">
-		<span class="kicker">Your set</span>
+		<div class="set-head">
+			<span class="kicker">Your set</span>
+			<button class="export" disabled={!fullSet.length} onclick={() => (exportOpen = !exportOpen)} aria-expanded={exportOpen}>
+				Export ↑
+			</button>
+			{#if exportOpen}
+				<div class="export-menu" role="menu">
+					<button role="menuitem" onclick={copySet}>{copied ? 'Copied ✓' : '📋 Copy tracklist'}</button>
+					<button role="menuitem" onclick={() => download(setAsText() + '\n', 'next-track-set.txt', 'text/plain')}>📝 Text file (.txt)</button>
+					<button role="menuitem" onclick={() => download(setAsCsv() + '\n', 'next-track-set.csv', 'text/csv')}>📊 Spreadsheet (.csv)</button>
+					{#if data.previews}
+						<a role="menuitem" href="/api/playlist?ids={fullSet.map((t) => t.id).join(',')}" download onclick={() => (exportOpen = false)}>
+							🎧 Playlist for Rekordbox, Serato, Traktor (.m3u8)
+						</a>
+					{/if}
+				</div>
+			{/if}
+		</div>
 		<ol>
 			{#each setlist as t, i (t.id + i)}
 				<li
@@ -590,6 +650,8 @@
 		height: 100dvh;
 		display: grid;
 		grid-template-rows: auto minmax(0, 1fr) auto;
+		/* minmax(0, …) so a long set list scrolls inside the footer instead of widening the page. */
+		grid-template-columns: minmax(0, 1fr);
 		padding: 16px 28px 0;
 		overflow: hidden;
 	}
@@ -847,6 +909,9 @@
 		z-index: 20;
 	}
 	.setlist ol {
+		flex: 1;
+		/* Without min-width the list grows past the footer and its end can't be scrolled to. */
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 12px;
@@ -854,6 +919,68 @@
 		margin: 0;
 		padding: 4px 4px 8px;
 		overflow-x: auto;
+	}
+	/* Flex items don't keep end padding in a scroller, so add the gap after the last card. */
+	.setlist ol::after {
+		content: '';
+		flex: none;
+		width: 1px;
+	}
+	.set-head {
+		position: relative;
+		flex: none;
+		display: grid;
+		justify-items: start;
+		gap: 6px;
+	}
+	.set-head .kicker {
+		margin: 0;
+	}
+	.export {
+		font-weight: 800;
+		font-size: 12px;
+		letter-spacing: 1px;
+		text-transform: uppercase;
+		padding: 4px 10px;
+		background: var(--yellow);
+		border: 2.5px solid var(--ink);
+		border-radius: 99px;
+		box-shadow: 2px 2px 0 var(--ink);
+		cursor: pointer;
+	}
+	.export:disabled {
+		opacity: 0.4;
+		cursor: default;
+	}
+	.export-menu {
+		position: absolute;
+		left: -6px;
+		bottom: calc(100% + 18px);
+		z-index: 40;
+		display: grid;
+		min-width: 300px;
+		padding: 8px;
+		background: var(--paper);
+		border: 3px solid var(--ink);
+		border-radius: 18px;
+		box-shadow: 6px 6px 0 var(--ink);
+		animation: pop 0.25s cubic-bezier(0.3, 1.6, 0.5, 1);
+	}
+	.export-menu > * {
+		text-align: left;
+		font: inherit;
+		font-weight: 700;
+		font-size: 14px;
+		color: var(--ink);
+		text-decoration: none;
+		padding: 10px 12px;
+		background: none;
+		border: 0;
+		border-radius: 10px;
+		cursor: pointer;
+	}
+	.export-menu > *:hover {
+		background: var(--yellow);
 	}
 	.set-card {
 		position: relative;

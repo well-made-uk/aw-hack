@@ -1,8 +1,10 @@
 <script>
+	import { onMount, untrack } from 'svelte';
 	import Record from '#lib/components/Record.svelte';
 	import Suggestion from '#lib/components/Suggestion.svelte';
 	import Controls from '#lib/components/Controls.svelte';
 	import TrackCard from '#lib/components/TrackCard.svelte';
+	import Tour from '#lib/components/Tour.svelte';
 	import { compatibleKeys, keyAngle } from '#lib/camelot.js';
 
 	/** @typedef {import('#lib/server/tracks.js').Track} Track */
@@ -36,8 +38,8 @@
 	let tolerance = $state(6);
 	/** @type {'strict' | 'loose' | 'any'} */
 	let keyMode = $state('loose');
-	/** @type {'down' | 'any' | 'up'} */
-	let energy = $state('any');
+	/** @type {'down' | 'same' | 'up'} */
+	let energy = $state('same');
 
 	let stageWidth = $state(640);
 	let stageHeight = $state(0);
@@ -264,6 +266,38 @@
 			.filter((t) => crateMatches.has(t.id))
 			.sort((a, b) => (crateMatches.get(b.id) ?? 0) - (crateMatches.get(a.id) ?? 0));
 	});
+
+	// First-run guide. Steps 1 and 3 move on when a track is picked, step 2 once a filter has
+	// changed and Next is clicked, step 4 on Complete. Finishing or closing it is remembered.
+	const TOUR_KEY = 'nexttrack:tour-done';
+	let tourStep = $state(0);
+	let tourFrom = { id: /** @type {string | null} */ (null), filters: '' };
+	const filters = $derived(`${tolerance}|${keyMode}|${energy}`);
+
+	/** @param {number} step */
+	function tourTo(step) {
+		tourStep = step;
+		tourFrom = untrack(() => ({ id: playingId, filters }));
+	}
+
+	function tourEnd() {
+		tourStep = 0;
+		try {
+			localStorage.setItem(TOUR_KEY, '1');
+		} catch {}
+	}
+
+	onMount(() => {
+		let done = false;
+		try {
+			done = localStorage.getItem(TOUR_KEY) === '1';
+		} catch {}
+		if (!done) tourTo(1);
+	});
+
+	$effect(() => {
+		if ((tourStep === 1 || tourStep === 3) && playingId && playingId !== tourFrom.id) tourTo(tourStep + 1);
+	});
 </script>
 
 <audio bind:this={audio} preload="none"></audio>
@@ -274,6 +308,18 @@
 		<span class="source" class:live={data.source === 'vectorsdb'}>
 			{data.source === 'vectorsdb' ? '● Live from VectorsDB' : 'Demo crate'}
 		</span>
+		{#if tourStep}
+			<div class="tour-slot">
+				<Tour
+					step={tourStep}
+					canNext={filters !== tourFrom.filters}
+					onnext={() => (tourStep === 4 ? tourEnd() : tourTo(tourStep + 1))}
+					onclose={tourEnd}
+				/>
+			</div>
+		{:else}
+			<button class="how" onclick={() => ((crateOpen = true), tourTo(1))}>? How it works</button>
+		{/if}
 	</header>
 
 	<main>
@@ -487,6 +533,7 @@
 		</div>
 	{/if}
 
+
 	{#if card}
 		<TrackCard {...card} previewing={previewId === card.track.id} />
 	{/if}
@@ -532,6 +579,25 @@
 	}
 	.source.live {
 		background: var(--teal);
+	}
+	.tour-slot {
+		margin-left: auto;
+	}
+	.how {
+		margin-left: auto;
+		font-weight: 700;
+		font-size: 13px;
+		padding: 6px 12px;
+		border: 2.5px solid var(--ink);
+		border-radius: 99px;
+		background: var(--yellow);
+		box-shadow: 3px 3px 0 var(--ink);
+		cursor: pointer;
+		rotate: 2deg;
+	}
+	.how:active {
+		translate: 2px 2px;
+		box-shadow: 1px 1px 0 var(--ink);
 	}
 	main {
 		display: grid;

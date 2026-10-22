@@ -19,7 +19,7 @@ import { demoTracks } from './demo.js';
  * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number, energy?: number, peak_at?: number, file?: string }} TrackMeta
  * @typedef {{ id: string, embeddings: number[], metadata: TrackMeta }} StoredTrack
  * @typedef {TrackMeta & { id: string, sig: number[] }} Track
- * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number }} NextOptions
+ * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'same' | 'up' | 'any', limit?: number }} NextOptions
  */
 
 const live = Boolean(APPWRITE_PROJECT_ID && APPWRITE_API_KEY);

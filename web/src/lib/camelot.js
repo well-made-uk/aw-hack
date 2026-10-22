@@ -30,14 +30,15 @@ export function mixableBpms(bpm, tolerance = 6) {
 }
 
 /**
- * Energy levels (1-10) to allow next: up keeps the energy level or lifts it, down keeps or drops it.
+ * Energy levels (1-10) to allow next: same keeps it within one level, up lifts it, down drops it.
  * @param {number | undefined} level the playing track's energy
- * @param {'down' | 'any' | 'up'} energy
+ * @param {'down' | 'same' | 'up' | 'any'} energy
  */
 export function energyLevels(level, energy) {
 	if (!level || energy === 'any') return null;
+	const [lo, hi] = energy === 'up' ? [level + 1, 10] : energy === 'down' ? [1, level - 1] : [level - 1, level + 1];
 	const out = [];
-	for (let l = energy === 'up' ? level : 1; l <= (energy === 'down' ? level : 10); l++) out.push(String(l));
+	for (let l = Math.max(1, lo); l <= Math.min(10, hi); l++) out.push(String(l));
 	return out;
 }
 

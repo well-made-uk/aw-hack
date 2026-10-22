@@ -3,14 +3,14 @@
 	 * @type {{
 	 *   tolerance: number,
 	 *   keyMode: 'strict' | 'loose' | 'any',
-	 *   energy: 'down' | 'any' | 'up'
+	 *   energy: 'down' | 'same' | 'up'
 	 * }}
 	 */
 	let { tolerance = $bindable(), keyMode = $bindable(), energy = $bindable() } = $props();
 
 	const KEY_MODES = /** @type {const} */ (['strict', 'loose', 'any']);
 	const KEY_ANGLES = { strict: -60, loose: 0, any: 60 };
-	const ENERGY = /** @type {const} */ (['down', 'any', 'up']);
+	const ENERGY = /** @type {const} */ (['down', 'same', 'up']);
 
 	// Knob: drag left/right to turn. It follows the pointer, then snaps to the nearest position.
 	/** @type {number | null} */
@@ -99,7 +99,7 @@
 			oninput={(e) => (energy = ENERGY[Number(e.currentTarget.value)])}
 			aria-label="Energy: {energy}"
 		/>
-		<span class="ends"><span>↓ chill</span><span>↑ lift</span></span>
+		<span class="ends"><span>↓ chill</span><span>= same</span><span>↑ lift</span></span>
 	</label>
 </div>
 

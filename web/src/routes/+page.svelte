@@ -49,32 +49,47 @@
 	/** @type {Map<string, number>} */
 	let crateMatches = $state(new Map());
 
-	// Hover previews, streamed from your own music folder (only when MUSIC_DIR is set).
+	// Audio, streamed from your own music folder (only when MUSIC_DIR is set). Two players, like a
+	// mixer: the deck plays the track on deck, and the cue plays whatever you hover. Hovering a
+	// record fades the deck out and the cue in; moving off fades back to the deck where it left off.
 	/** @type {string | null} */
 	let previewId = $state(null);
 	/** @type {HTMLAudioElement | undefined} */
-	let audio = $state();
+	let deck = $state();
+	/** @type {HTMLAudioElement | undefined} */
+	let cue = $state();
+	// You can pause the deck; hovering still previews, and moving off leaves it paused.
+	let deckPaused = $state(false);
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	let hoverTimer;
-	/** @type {ReturnType<typeof setInterval> | undefined} */
-	let fadeTimer;
+	/** @type {Map<HTMLAudioElement, ReturnType<typeof setInterval>>} */
+	const fades = new Map();
 
-	/** @param {number} to @param {() => void} [done] */
-	function fade(to, done) {
-		clearInterval(fadeTimer);
-		fadeTimer = setInterval(() => {
-			if (!audio) return;
-			const v = audio.volume + (to > audio.volume ? 0.1 : -0.1);
-			audio.volume = Math.min(1, Math.max(0, v));
-			if (Math.abs(audio.volume - to) < 0.05) {
-				audio.volume = to;
-				clearInterval(fadeTimer);
-				done?.();
-			}
-		}, 30);
+	/** @param {HTMLAudioElement | undefined} el @param {number} to @param {() => void} [done] */
+	function fade(el, to, done) {
+		if (!el) return;
+		clearInterval(fades.get(el));
+		fades.set(
+			el,
+			setInterval(() => {
+				const v = el.volume + (to > el.volume ? 0.1 : -0.1);
+				el.volume = Math.min(1, Math.max(0, v));
+				if (Math.abs(el.volume - to) < 0.05) {
+					el.volume = to;
+					clearInterval(fades.get(el));
+					done?.();
+				}
+			}, 30)
+		);
 	}
 
-	/** Hovering a record previews it; leaving fades it out. @param {string | null} id */
+	/** Where to drop in: just before the track's biggest moment, or 40% in for older analyses. */
+	function cuePoint(/** @type {string} */ id) {
+		const t = byId.get(id);
+		return Math.round(t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4);
+	}
+
+	/** Hovering a record previews it; leaving goes back to the deck. @param {string | null} id */
 	function hover(id) {
 		if (!data.previews) {
 			// Say why hovering is silent, rather than failing quietly.
@@ -82,6 +97,8 @@
 			return;
 		}
 		clearTimeout(hoverTimer);
+		// The deck is already playing, so hovering it is the same as hovering nothing.
+		if (id === playingId) id = null;
 		hoverId = id;
 		hoverTimer = setTimeout(() => (id ? startPreview(id) : stopPreview()), id ? 200 : 120);
 	}
@@ -96,17 +113,13 @@
 	// can't stomp on the current one.
 	let previewGen = 0;
 
-	/** @param {string} id */
-	function startPreview(id) {
-		if (!audio || previewId === id) return;
-		const gen = ++previewGen;
-		const el = audio;
-		previewId = id;
-		clearInterval(fadeTimer);
+	/**
+	 * Load and play `id` on a player, fading it in.
+	 * @param {HTMLAudioElement} el @param {string} id @param {number} start @param {() => boolean} current
+	 */
+	function load(el, id, start, current) {
+		clearInterval(fades.get(el));
 		el.volume = 0;
-		// Start just before the track's biggest moment, or 40% in for older analyses.
-		const t = byId.get(id);
-		const start = Math.round(t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4);
 		// play() straight away: it's what makes every browser (Safari included) start loading,
 		// and it's where a blocked autoplay shows up. The #t fragment seeks on load; the
 		// loadedmetadata check covers browsers that ignore it.
@@ -114,39 +127,80 @@
 		el.addEventListener(
 			'loadedmetadata',
 			() => {
-				if (gen === previewGen && Math.abs(el.currentTime - start) > 2) el.currentTime = start;
+				if (current() && Math.abs(el.currentTime - start) > 2) el.currentTime = start;
 			},
 			{ once: true }
 		);
-		el.play()
-			.then(() => gen === previewGen && fade(1))
-			.catch((/** @type {Error} */ e) => {
-				if (gen !== previewGen) return;
-				previewId = null;
-				if (e.name === 'NotAllowedError') previewsLocked = true;
-				else console.warn('Preview failed:', e);
-			});
+		return el.play().then(() => current() && fade(el, 1));
+	}
+
+	/** @param {string} id */
+	function startPreview(id) {
+		if (!cue || previewId === id) return;
+		const gen = ++previewGen;
+		previewId = id;
+		fade(deck, 0, () => deck?.pause());
+		load(cue, id, cuePoint(id), () => gen === previewGen).catch((/** @type {Error} */ e) => {
+			if (gen !== previewGen) return;
+			previewId = null;
+			if (e.name === 'NotAllowedError') previewsLocked = true;
+			else console.warn('Preview failed:', e);
+			resumeDeck();
+		});
 	}
 
 	function stopPreview() {
 		previewGen++;
 		if (!previewId) return;
 		previewId = null;
-		fade(0, () => audio?.pause());
+		fade(cue, 0, () => cue?.pause());
+		resumeDeck();
+	}
+
+	function resumeDeck() {
+		if (!deck || !playingId || deckPaused || !deck.src) return;
+		deck.play().then(() => fade(deck, 1), () => {});
+	}
+
+	/** Put `id` on the deck. If it was being previewed, carry on from the same spot. @param {string} id */
+	function loadDeck(id) {
+		if (!deck || !data.previews) return;
+		const from = previewId === id && cue ? Math.round(cue.currentTime) : cuePoint(id);
+		clearTimeout(hoverTimer);
+		previewGen++;
+		previewId = null;
+		hoverId = null;
+		cue?.pause();
+		deckPaused = false;
+		const el = deck;
+		load(el, id, from, () => playingId === id).catch((/** @type {Error} */ e) => {
+			if (playingId !== id) return;
+			if (e.name === 'NotAllowedError') previewsLocked = true;
+		});
+	}
+
+	function toggleDeck() {
+		if (!deck) return;
+		deckPaused = !deckPaused;
+		if (deckPaused) fade(deck, 0, () => deck?.pause());
+		else if (!previewId) resumeDeck();
 	}
 
 	// Safari only lets an audio element play from code once it has played inside a click.
-	// So the first click anywhere plays a blip of silence on it, then retries the hovered record.
+	// So the first click anywhere plays a blip of silence on each player, then retries the hovered record.
 	let primed = false;
 	function unlockPreviews() {
-		if (!primed && audio && !previewId) {
+		if (!primed && cue && deck && !previewId && !playingId) {
 			primed = true;
-			const el = audio;
-			el.src = silence();
-			el.play().then(() => el.pause(), () => {});
+			for (const el of [cue, deck]) {
+				const blip = (el.src = silence());
+				// Only pause the blip: a click that plays a record may have reloaded this player already.
+				el.play().then(() => el.src === blip && el.pause(), () => {});
+			}
 		}
 		if (!previewsLocked) return;
 		previewsLocked = false;
+		if (playingId && deck?.paused && !deckPaused) loadDeck(playingId);
 		if (hoverId) startPreview(hoverId);
 	}
 
@@ -205,11 +259,10 @@
 
 	/** @param {string} id */
 	function play(id) {
-		clearTimeout(hoverTimer);
-		stopPreview();
 		card = null;
 		if (id === playingId) return;
 		if (playing) setlist = [...setlist, playing];
+		loadDeck(id);
 		playingId = id;
 		crateOpen = false;
 	}
@@ -413,7 +466,8 @@
 	}}
 />
 
-<audio bind:this={audio} preload="auto"></audio>
+<audio bind:this={deck} preload="auto" onended={() => (deckPaused = true)}></audio>
+<audio bind:this={cue} preload="auto"></audio>
 
 <div class="page">
 	<header>
@@ -451,7 +505,14 @@
 				<p class="kicker">Start here</p>
 				<h2>Pick a record to drop.</h2>
 			{/if}
-			<button class="dig" onclick={() => (crateOpen = true)}>Dig the crate ↓</button>
+			<div class="now-actions">
+				<button class="dig" onclick={() => (crateOpen = true)}>Dig the crate ↓</button>
+				{#if playing && data.previews}
+					<button class="deck-toggle" onclick={toggleDeck} aria-label={deckPaused ? 'Play the deck' : 'Pause the deck'}>
+						{deckPaused ? '▶' : '❚❚'}
+					</button>
+				{/if}
+			</div>
 		</section>
 
 		<section class="stage" bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
@@ -494,7 +555,7 @@
 							onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
 							onpointerleave={hoverOff}
 						>
-							<Record sig={playing.sig} size={deckR * 2} spinning title={playing.title} />
+							<Record sig={playing.sig} size={deckR * 2} spinning={!deckPaused} title={playing.title} />
 						</div>
 					{/key}
 
@@ -817,8 +878,28 @@
 		align-self: center;
 		rotate: -2deg;
 	}
-	.dig {
+	.now-actions {
+		display: flex;
+		align-items: center;
+		gap: 14px;
 		margin-top: 26px;
+	}
+	.deck-toggle {
+		width: 56px;
+		height: 56px;
+		border-radius: 50%;
+		font-size: 18px;
+		font-weight: 900;
+		background: var(--paper);
+		border: 3px solid var(--ink);
+		box-shadow: 4px 4px 0 var(--ink);
+		cursor: pointer;
+	}
+	.deck-toggle:active {
+		translate: 2px 2px;
+		box-shadow: 2px 2px 0 var(--ink);
+	}
+	.dig {
 		font-family: var(--display);
 		font-weight: 800;
 		font-size: 18px;

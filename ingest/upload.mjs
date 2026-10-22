@@ -35,6 +35,12 @@ for (const line of readFileSync(file, 'utf8').split('\n')) {
 }
 const tracks = [...latest.values()];
 
+// Some download sites stamp their name into the tags, e.g. "Breath (Remix) [djsite.com]".
+const stripSite = (/** @type {string} */ s) => s.replace(/\s*[[(][^\])]*\.(com|net|org|co|ru|to)[^\])]*[\])]/gi, '').trim();
+for (const { metadata } of tracks) {
+	for (const k of ['title', 'artist', 'album']) if (metadata[k]) metadata[k] = stripSite(metadata[k]);
+}
+
 // Energy 1-10: each track's peak moment (loudness + rhythmic density), ranked across
 // the crate. Peak rather than average, so a chill track with a huge drop rates high.
 const peaks = tracks.filter((t) => t.metadata.peak_rms_db !== undefined);

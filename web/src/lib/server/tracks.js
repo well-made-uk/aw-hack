@@ -117,7 +117,8 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 			Query.limit(limit)
 		];
 		if (keys) queries.push(Query.equal('metadata.camelot', keys));
-		const { documents } = await vectorsDB.listDocuments({ ...ids, queries });
+		// createQuery sends queries in the body; a 512-d vector is too long for listDocuments' URL.
+		const { documents } = await vectorsDB.createQuery({ ...ids, queries });
 		results = documents.map((doc) => ({ track: fromDoc(doc), distance: doc.$distance }));
 	} else {
 		results = stored
@@ -133,7 +134,8 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 		playing: toTrack(playing),
 		suggestions: results.map(({ track, distance }) => ({
 			...toTrack(track),
-			match: Math.max(0, Math.min(1, 1 - distance))
+			// Cosine distance is 0..2 on centred vectors, so map it onto 0..1.
+			match: Math.max(0, Math.min(1, 1 - distance / 2))
 		}))
 	};
 }

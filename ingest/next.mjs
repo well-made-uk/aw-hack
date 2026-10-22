@@ -59,11 +59,12 @@ if (!flags.includes('--any')) {
 	queries.push(Query.equal('metadata.bpm_int', mixableBpms(bpm)));
 }
 
-const { documents } = await vectorsDB.listDocuments({ ...ids, queries });
+// createQuery sends queries in the body; a 512-d vector is too long for listDocuments' URL.
+const { documents } = await vectorsDB.createQuery({ ...ids, queries });
 if (!documents.length) console.log('No matches. Try --any to drop the BPM/key filter.');
 for (const doc of documents) {
 	const m = doc.metadata;
-	const pct = Math.round((1 - doc.$distance) * 100);
+	const pct = Math.round((1 - doc.$distance / 2) * 100);
 	console.log(`${String(pct).padStart(4)}%  ${m.title} – ${m.artist}  [${m.bpm} BPM, ${m.camelot}]`);
 }
 console.log();

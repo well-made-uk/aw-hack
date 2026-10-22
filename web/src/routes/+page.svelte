@@ -2,7 +2,7 @@
 	import Record from '#lib/components/Record.svelte';
 	import Suggestion from '#lib/components/Suggestion.svelte';
 	import Controls from '#lib/components/Controls.svelte';
-	import { compatibleKeys, keyAngle } from '#lib/camelot.js';
+	import { compatibleKeys, keyAngle, mixableBpms } from '#lib/camelot.js';
 
 	/** @typedef {import('#lib/server/tracks.js').Track} Track */
 	/** @typedef {Track & { match: number }} Suggested */
@@ -26,6 +26,12 @@
 	let energy = $state('any');
 
 	let stageWidth = $state(640);
+	let stageHeight = $state(0);
+
+	// Crate "sort by match": the whole crate ranked by sound against the playing track.
+	let sortByMatch = $state(false);
+	/** @type {Map<string, number>} */
+	let crateMatches = $state(new Map());
 
 	// Hover previews, streamed from your own music folder (only when MUSIC_DIR is set).
 	/** @type {string | null} */
@@ -104,13 +110,14 @@
 	}
 
 	// Geometry: everything is relative to the square stage.
-	const S = $derived(Math.max(320, stageWidth));
+	const S = $derived(Math.max(300, stageHeight ? Math.min(stageWidth, stageHeight) : stageWidth));
 	const C = $derived(S / 2);
 	const R = $derived(S / 2 - 6);
 	const deckR = $derived(R * 0.27);
 	const orbitMax = $derived(R * 0.69);
 
-	const glowing = $derived(new Set(playing ? (compatibleKeys(playing.camelot, keyMode) ?? []) : []));
+	const SLICES = Array.from({ length: 12 }, (_, i) => i + 1).flatMap((n) => [`${n}A`, `${n}B`]);
+	const glowing = $derived(new Set(playing ? (compatibleKeys(playing.camelot, keyMode) ?? SLICES) : []));
 
 	/** Point on the stage at `deg` (0 = top, clockwise) and radius `r`. */
 	function polar(/** @type {number} */ deg, /** @type {number} */ r) {
@@ -124,7 +131,6 @@
 		return `M${p0.x},${p0.y} A${r1},${r1} 0 0 1 ${p1.x},${p1.y} L${p2.x},${p2.y} A${r0},${r0} 0 0 0 ${p3.x},${p3.y}Z`;
 	}
 
-	const SLICES = Array.from({ length: 12 }, (_, i) => i + 1).flatMap((n) => [`${n}A`, `${n}B`]);
 	/** @param {string} code */
 	const sliceHue = (code) => ((parseInt(code, 10) - 1) * 30 + 200) % 360;
 
@@ -180,9 +186,30 @@
 		return true;
 	}
 
-	const crate = $derived(
-		data.tracks.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()))
-	);
+	$effect(() => {
+		if (!sortByMatch || !playingId) return;
+		const id = playingId;
+		fetch(`/api/next?${new URLSearchParams({ id, all: '1' })}`)
+			.then((r) => r.json())
+			.then((/** @type {{ suggestions: Suggested[] }} */ d) => {
+				if (id === playingId) crateMatches = new Map(d.suggestions.map((s) => [s.id, s.match]));
+			});
+	});
+
+	/** Would this track mix in with the current pitch range and key settings? @param {Track} t */
+	function mixable(t) {
+		if (!playing || t.id === playing.id) return false;
+		const keys = compatibleKeys(playing.camelot, keyMode);
+		return (!keys || keys.includes(t.camelot)) && mixableBpms(playing.bpm, tolerance, energy).includes(String(Math.round(t.bpm)));
+	}
+
+	const sorting = $derived(sortByMatch && Boolean(playing) && crateMatches.size > 0);
+	const crate = $derived.by(() => {
+		const found = data.tracks.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()));
+		if (!sorting) return found;
+		// Best matches first; tracks outside the top results keep crate order after them.
+		return found.toSorted((a, b) => (crateMatches.get(b.id) ?? -1) - (crateMatches.get(a.id) ?? -1));
+	});
 </script>
 
 <audio bind:this={audio} preload="none"></audio>
@@ -213,7 +240,8 @@
 			<button class="dig" onclick={() => (crateOpen = true)}>Dig the crate ↓</button>
 		</section>
 
-		<section class="stage" bind:clientWidth={stageWidth} style="height:{S}px">
+		<section class="stage" bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
+			<div class="square" style="width:{S}px; height:{S}px">
 			<svg class="wheel" width={S} height={S} aria-hidden="true">
 				{#each SLICES as code}
 					{@const n = parseInt(code, 10)}
@@ -279,6 +307,7 @@
 			{:else}
 				<div class="deck idle" style="--size:{deckR * 2}px; left:{C}px; top:{C}px"></div>
 			{/if}
+			</div>
 		</section>
 
 		<aside>
@@ -286,28 +315,35 @@
 		</aside>
 	</main>
 
-	{#if setlist.length}
-		<footer class="setlist">
-			<span class="kicker">Your set</span>
-			<svg class="cable" preserveAspectRatio="none" viewBox="0 0 100 20" aria-hidden="true"
-				><path d="M0 10 Q 12.5 0 25 10 T 50 10 T 75 10 T 100 10" /></svg
-			>
-			<ol>
-				{#each [...setlist, ...(playing ? [playing] : [])] as t, i (i)}
-					<li class:current={i === setlist.length}>
-						<Record sig={t.sig} size={64} />
-						<span>{t.title}</span>
-					</li>
-				{/each}
-			</ol>
-		</footer>
-	{/if}
+	<footer class="setlist">
+		<span class="kicker">Your set</span>
+		<svg class="cable" preserveAspectRatio="none" viewBox="0 0 100 20" aria-hidden="true"
+			><path d="M0 10 Q 12.5 0 25 10 T 50 10 T 75 10 T 100 10" /></svg
+		>
+		<ol>
+			{#each [...setlist, ...(playing ? [playing] : [])] as t, i (i)}
+				<li class:current={i === setlist.length}>
+					<Record sig={t.sig} size={64} />
+					<span>{t.title}</span>
+				</li>
+			{:else}
+				<li class="placeholder">Records you play line up here.</li>
+			{/each}
+		</ol>
+	</footer>
 
 	{#if crateOpen}
 		<div class="crate" role="dialog" aria-label="Your crate">
 			<div class="crate-head">
 				<h2>The crate</h2>
 				<input placeholder="Search title or artist…" bind:value={search} />
+				{#if playing}
+					<label class="sort">
+						<input type="checkbox" bind:checked={sortByMatch} />
+						<span class="switch" aria-hidden="true"></span>
+						Sort by match to <strong>{playing.title}</strong>
+					</label>
+				{/if}
 				{#if playing}<button class="close" onclick={() => (crateOpen = false)} aria-label="Close">✕</button>{/if}
 			</div>
 			<div class="sleeves">
@@ -323,6 +359,13 @@
 						<span class="sleeve-title">{t.title}</span>
 						<span class="sleeve-meta">{t.artist}</span>
 						<span class="sleeve-tags">{Math.round(t.bpm)} · {t.camelot}</span>
+						{#if t.id === playing?.id}
+							<span class="sleeve-badge on-deck">On deck</span>
+						{:else if sorting && crateMatches.has(t.id)}
+							<span class="sleeve-badge" class:mix={mixable(t)}>
+								{Math.round((crateMatches.get(t.id) ?? 0) * 100)}%{mixable(t) ? ' · mixable' : ''}
+							</span>
+						{/if}
 					</button>
 				{/each}
 			</div>
@@ -331,10 +374,14 @@
 </div>
 
 <style>
+	/* Desktop: exactly one screen, no scrolling. Smaller screens stack and scroll (see media queries). */
 	.page {
 		position: relative;
-		min-height: 100vh;
-		padding: 20px 28px 140px;
+		height: 100vh;
+		height: 100dvh;
+		display: grid;
+		grid-template-rows: auto minmax(0, 1fr) auto;
+		padding: 16px 28px 0;
 		overflow: hidden;
 	}
 	header {
@@ -369,10 +416,11 @@
 	}
 	main {
 		display: grid;
-		grid-template-columns: minmax(220px, 1fr) minmax(320px, 680px) auto;
+		grid-template-columns: minmax(220px, 1fr) minmax(0, 2.4fr) auto;
 		gap: 28px;
 		align-items: center;
-		margin-top: 10px;
+		min-height: 0;
+		padding: 8px 0;
 	}
 	.now {
 		align-self: center;
@@ -456,8 +504,14 @@
 	}
 
 	.stage {
-		position: relative;
 		width: 100%;
+		height: 100%;
+		min-height: 0;
+		display: grid;
+		place-items: center;
+	}
+	.square {
+		position: relative;
 	}
 	.wheel {
 		position: absolute;
@@ -550,10 +604,9 @@
 	}
 
 	.setlist {
-		position: fixed;
-		left: 0;
-		right: 0;
-		bottom: 0;
+		position: relative;
+		margin: 0 -28px;
+		min-height: 108px;
 		display: flex;
 		align-items: center;
 		gap: 16px;
@@ -604,6 +657,17 @@
 		white-space: nowrap;
 		max-width: 100%;
 	}
+	.setlist li.placeholder {
+		width: auto;
+		align-self: center;
+		padding: 8px 16px;
+		background: var(--paper);
+		border: 2.5px dashed var(--ink);
+		border-radius: 99px;
+		font-weight: 700;
+		font-size: 14px;
+		animation: none;
+	}
 	.setlist li.current {
 		outline: 3px dashed var(--orange);
 		outline-offset: 4px;
@@ -637,6 +701,7 @@
 	}
 	.crate-head {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 18px;
 	}
@@ -723,10 +788,91 @@
 		font-weight: 700;
 		opacity: 0.7;
 	}
+	.sleeve-badge {
+		position: absolute;
+		top: 10px;
+		right: 10px;
+		font-family: var(--display);
+		font-weight: 800;
+		font-size: 14px;
+		padding: 4px 10px;
+		background: var(--paper);
+		border: 2.5px solid var(--ink);
+		border-radius: 99px;
+		rotate: 4deg;
+	}
+	.sleeve-badge.mix {
+		background: var(--teal);
+	}
+	.sleeve-badge.on-deck {
+		background: var(--orange);
+		color: var(--paper);
+	}
+	.sort {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-weight: 700;
+		font-size: 16px;
+		cursor: pointer;
+		user-select: none;
+	}
+	.sort strong {
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.sort input {
+		position: absolute;
+		opacity: 0;
+		pointer-events: none;
+	}
+	.switch {
+		position: relative;
+		width: 58px;
+		height: 32px;
+		flex: none;
+		background: var(--paper);
+		border: 3px solid var(--ink);
+		border-radius: 99px;
+		transition: background 0.2s;
+	}
+	.switch::after {
+		content: '';
+		position: absolute;
+		top: 3px;
+		left: 3px;
+		width: 20px;
+		height: 20px;
+		background: var(--ink);
+		border-radius: 50%;
+		transition: translate 0.25s cubic-bezier(0.3, 1.6, 0.5, 1);
+	}
+	.sort input:checked + .switch {
+		background: var(--orange);
+	}
+	.sort input:checked + .switch::after {
+		translate: 26px 0;
+		background: var(--paper);
+	}
+	.sort input:focus-visible + .switch {
+		outline: 3px dashed var(--ink);
+		outline-offset: 3px;
+	}
 
 	@media (max-width: 1000px) {
+		.page {
+			height: auto;
+			min-height: 100vh;
+			overflow: visible;
+		}
 		main {
 			grid-template-columns: 1fr;
+		}
+		.stage {
+			height: auto;
+			aspect-ratio: 1;
 		}
 		aside {
 			justify-self: center;
@@ -734,7 +880,10 @@
 	}
 	@media (max-width: 600px) {
 		.page {
-			padding: 16px 16px 140px;
+			padding: 16px 16px 0;
+		}
+		.setlist {
+			margin: 0 -16px;
 		}
 		.crate-head h2 {
 			font-size: 30px;

@@ -19,7 +19,7 @@ import { demoTracks } from './demo.js';
  * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number, file?: string }} TrackMeta
  * @typedef {{ id: string, embeddings: number[], metadata: TrackMeta }} StoredTrack
  * @typedef {TrackMeta & { id: string, sig: number[] }} Track
- * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number }} NextOptions
+ * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number, unfiltered?: boolean }} NextOptions
  */
 
 const live = Boolean(APPWRITE_PROJECT_ID && APPWRITE_API_KEY);
@@ -90,9 +90,19 @@ async function allStored() {
 	return tracks;
 }
 
-/** The stored track, including its file path relative to MUSIC_DIR. @param {string} id */
+/**
+ * One stored track, including its file path relative to MUSIC_DIR. Falls back to
+ * VectorsDB when the track was uploaded after the list was cached.
+ * @param {string} id
+ */
 export async function getStored(id) {
-	return (await allStored()).find((t) => t.id === id) ?? null;
+	const cached = (await allStored()).find((t) => t.id === id);
+	if (cached || !vectorsDB) return cached ?? null;
+	try {
+		return fromDoc(await vectorsDB.getDocument({ ...ids, documentId: id }));
+	} catch {
+		return null;
+	}
 }
 
 export async function listTracks() {
@@ -105,13 +115,14 @@ export async function listTracks() {
  * @param {string} id
  * @param {NextOptions} opts
  */
-export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy = 'any', limit = 12 } = {}) {
+export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy = 'any', limit = 12, unfiltered = false } = {}) {
 	const stored = await allStored();
-	const playing = stored.find((t) => t.id === id);
+	const playing = await getStored(id);
 	if (!playing) return null;
 
-	const keys = compatibleKeys(playing.metadata.camelot, keyMode);
-	const bpms = mixableBpms(playing.metadata.bpm, tolerance, energy);
+	// `unfiltered` ranks the whole crate purely by sound, for the crate's "sort by match".
+	const keys = unfiltered ? null : compatibleKeys(playing.metadata.camelot, keyMode);
+	const bpms = unfiltered ? null : mixableBpms(playing.metadata.bpm, tolerance, energy);
 
 	/** @type {{ track: StoredTrack, distance: number }[]} */
 	let results;
@@ -119,9 +130,9 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 		const queries = [
 			Query.vectorCosine('embeddings', playing.embeddings),
 			Query.notEqual('$id', id),
-			Query.equal('metadata.bpm_int', bpms),
 			Query.limit(limit)
 		];
+		if (bpms) queries.push(Query.equal('metadata.bpm_int', bpms));
 		if (keys) queries.push(Query.equal('metadata.camelot', keys));
 		// createQuery sends queries in the body; a 512-d vector is too long for listDocuments' URL.
 		const { documents } = await vectorsDB.createQuery({ ...ids, queries });
@@ -129,7 +140,7 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 	} else {
 		results = stored
 			.filter((t) => t.id !== id)
-			.filter((t) => bpms.includes(String(Math.round(t.metadata.bpm))))
+			.filter((t) => !bpms || bpms.includes(String(Math.round(t.metadata.bpm))))
 			.filter((t) => !keys || keys.includes(t.metadata.camelot))
 			.map((t) => ({ track: t, distance: 1 - dot(t.embeddings, playing.embeddings) }))
 			.sort((a, b) => a.distance - b.distance)

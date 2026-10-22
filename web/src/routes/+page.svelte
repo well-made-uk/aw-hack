@@ -273,6 +273,11 @@
 		card = null;
 		if (id === playingId) return;
 		if (playing) setlist = [...setlist, playing];
+		else {
+			// First pick: centre the energy range on it, one level either way.
+			const e = byId.get(id)?.energy;
+			if (e) [energyMin, energyMax] = [Math.max(1, e - 1), Math.min(10, e + 1)];
+		}
 		loadDeck(id);
 		playingId = id;
 		crateOpen = false;
@@ -1477,12 +1482,6 @@
 		font-size: 16px;
 		cursor: pointer;
 		user-select: none;
-	}
-	.sort strong {
-		max-width: 220px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	.sort input {
 		position: absolute;

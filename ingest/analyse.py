@@ -29,8 +29,8 @@ MODEL_ID = "laion/larger_clap_music"
 SAMPLE_RATE = 48_000  # CLAP expects 48 kHz
 WINDOW_SECONDS = 10
 WINDOW_POSITIONS = (0.3, 0.4, 0.5, 0.6)  # the body of the track, past DJ intros
-PEAK_SEARCH = (0.1, 0.9)  # where to look for the drop / biggest moment
-ANALYSIS_VERSION = 2  # bump when the analysis changes, so old results get redone
+PEAK_SEARCH = (0.2, 0.85)  # where to look for the drop: past drum intros, before outros
+ANALYSIS_VERSION = 3  # bump when the analysis changes, so old results get redone
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif", ".m4a", ".ogg"}
 
 # Camelot wheel: (pitch class, is_minor) -> code. C=0 … B=11.
@@ -129,12 +129,14 @@ def estimate_key(y, sr):
 
 
 def energy_peak(path, duration):
-    """Find the track's biggest 10 s moment (usually the drop) and how big it is.
+    """Find the track's drop (its biggest 10 s moment) and how big it is.
 
-    Each window is scored on loudness (RMS) and rhythmic density (onset strength),
-    z-scored within the track to pick the peak. The raw values at the peak are kept,
-    so upload can rank energy across the whole crate. A chill track with one huge
-    payoff scores high, because energy is its peak, not its average.
+    Each 10 s window gets a level (loudness + rhythmic density, z-scored within the
+    track) and a rise (its level minus the 4-20 s before it). The drop is the window
+    with the highest level + rise, so a big hit after a breakdown beats a steady loud
+    groove, and DJ intros/outros are outside the search range. The raw values at the
+    drop are kept, so upload can rank energy across the whole crate: a chill track with
+    one huge payoff scores high, because energy is its peak, not its average.
     """
     sr, hop = 11_025, 512
     y, _ = librosa.load(path, sr=sr, mono=True)
@@ -143,12 +145,17 @@ def energy_peak(path, duration):
     n = min(len(rms), len(onset))
     fps = sr / hop
     win, step = int(WINDOW_SECONDS * fps), int(2 * fps)
-    lo, hi = int(n * PEAK_SEARCH[0]), max(int(n * PEAK_SEARCH[1]) - win, int(n * PEAK_SEARCH[0]) + 1)
-    starts = list(range(lo, hi, step)) or [0]
+    starts = list(range(0, max(1, n - win), step))
     loud = np.array([20 * np.log10(rms[s : s + win].mean() + 1e-9) for s in starts])
     busy = np.array([onset[s : s + win].mean() for s in starts])
     z = lambda a: (a - a.mean()) / (a.std() + 1e-9)
-    best = int(np.argmax(z(loud) + z(busy)))
+    level = z(loud) + z(busy)
+    before = np.array([level[max(0, i - 10) : max(1, i - 2)].mean() for i in range(len(starts))])
+    score = level + (level - before)
+
+    lo, hi = int(len(starts) * PEAK_SEARCH[0]), int(len(starts) * PEAK_SEARCH[1])
+    candidates = range(lo, hi) if hi > lo else range(len(starts))
+    best = max(candidates, key=lambda i: score[i])
     return {
         "peak_at": round(min(starts[best] / fps, max(0.0, duration - WINDOW_SECONDS)), 1),
         "peak_rms_db": round(float(loud[best]), 2),

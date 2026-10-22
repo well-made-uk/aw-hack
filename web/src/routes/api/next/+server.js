@@ -6,7 +6,7 @@ export async function GET({ url }) {
 	if (!id) error(400, 'Missing id');
 
 	const keyMode = /** @type {any} */ (url.searchParams.get('keys') ?? 'loose');
-	const energy = /** @type {any} */ (url.searchParams.get('energy') ?? 'any');
+	const energy = url.searchParams.get('energy') ?? '1-10';
 	const tolerance = Number(url.searchParams.get('tol') ?? 6);
 
 	const limit = Math.min(100, Number(url.searchParams.get('limit') ?? 20));

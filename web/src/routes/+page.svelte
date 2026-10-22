@@ -38,8 +38,10 @@
 	let tolerance = $state(6);
 	/** @type {'strict' | 'loose' | 'any'} */
 	let keyMode = $state('loose');
-	/** @type {'down' | 'same' | 'up'} */
-	let energy = $state('same');
+	// Energy range to allow next, 1-10.
+	let energyMin = $state(1);
+	let energyMax = $state(10);
+	const energy = $derived(`${energyMin}-${energyMax}`);
 
 	let stageWidth = $state(640);
 	let stageHeight = $state(0);
@@ -586,7 +588,7 @@
 		</section>
 
 		<aside>
-			<Controls bind:tolerance bind:keyMode bind:energy />
+			<Controls bind:tolerance bind:keyMode bind:energyMin bind:energyMax current={playing?.energy} />
 		</aside>
 	</main>
 

@@ -20,7 +20,7 @@
 		},
 		{
 			title: 'Set your filters',
-			body: 'Slide the pitch range, turn the key knob or move the energy crossfader (chill, same, lift). The wheel updates live.',
+			body: 'Slide the pitch range, turn the key knob or drag the energy range (say 1–4 to keep it chill). The wheel updates live.',
 			emoji: '🎛️'
 		},
 		{

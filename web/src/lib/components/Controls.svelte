@@ -3,14 +3,23 @@
 	 * @type {{
 	 *   tolerance: number,
 	 *   keyMode: 'strict' | 'loose' | 'any',
-	 *   energy: 'down' | 'same' | 'up'
+	 *   energyMin: number,
+	 *   energyMax: number,
+	 *   current?: number
 	 * }}
 	 */
-	let { tolerance = $bindable(), keyMode = $bindable(), energy = $bindable() } = $props();
+	let {
+		tolerance = $bindable(),
+		keyMode = $bindable(),
+		energyMin = $bindable(),
+		energyMax = $bindable(),
+		current
+	} = $props();
 
 	const KEY_MODES = /** @type {const} */ (['strict', 'loose', 'any']);
 	const KEY_ANGLES = { strict: -60, loose: 0, any: 60 };
-	const ENERGY = /** @type {const} */ (['down', 'same', 'up']);
+	// Position (0-1) of energy level 1-10 along the range track.
+	const at = (/** @type {number} */ l) => (l - 1) / 9;
 
 	// Knob: drag left/right to turn. It follows the pointer, then snaps to the nearest position.
 	/** @type {number | null} */
@@ -88,19 +97,35 @@
 		</div>
 	</div>
 
-	<label class="xfader">
+	<div class="energy">
 		<span class="label">Energy</span>
-		<input
-			type="range"
-			min="0"
-			max="2"
-			step="1"
-			value={ENERGY.indexOf(energy)}
-			oninput={(e) => (energy = ENERGY[Number(e.currentTarget.value)])}
-			aria-label="Energy: {energy}"
-		/>
-		<span class="ends"><span>↓ chill</span><span>= same</span><span>↑ lift</span></span>
-	</label>
+		<span class="readout">{energyMin === energyMax ? energyMin : `${energyMin}–${energyMax}`}</span>
+		<div class="range" style="--lo:{at(energyMin)}; --hi:{at(energyMax)}">
+			<span class="fill"></span>
+			{#if current}
+				<span class="now" style="--at:{at(current)}" title="On deck: energy {current}"></span>
+			{/if}
+			<input
+				type="range"
+				min="1"
+				max="10"
+				step="1"
+				value={energyMin}
+				oninput={(e) => (energyMin = Math.min(Number(e.currentTarget.value), energyMax))}
+				aria-label="Lowest energy"
+			/>
+			<input
+				type="range"
+				min="1"
+				max="10"
+				step="1"
+				value={energyMax}
+				oninput={(e) => (energyMax = Math.max(Number(e.currentTarget.value), energyMin))}
+				aria-label="Highest energy"
+			/>
+		</div>
+		<span class="ends"><span>1 chill</span><span>10 peak</span></span>
+	</div>
 </div>
 
 <style>
@@ -244,9 +269,64 @@
 		background: var(--ink);
 		border-radius: 3px;
 	}
-	.xfader {
+	.energy {
 		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: center;
 		gap: 8px;
+	}
+	/* Two range inputs stacked on one track; only their thumbs take the pointer. */
+	.range {
+		grid-column: 1 / -1;
+		position: relative;
+		height: 44px;
+		display: grid;
+		align-items: center;
+	}
+	.range::before,
+	.fill {
+		content: '';
+		position: absolute;
+		left: 0;
+		right: 0;
+		height: 14px;
+		border-radius: 99px;
+		background: var(--ink);
+	}
+	/* Thumbs are 30px wide, so their centres run from 15px to 100% - 15px. */
+	.fill {
+		left: calc(15px + (100% - 30px) * var(--lo) - 4px);
+		right: calc(100% - 15px - (100% - 30px) * var(--hi) - 4px);
+		background: var(--yellow);
+	}
+	.now {
+		position: absolute;
+		left: calc(15px + (100% - 30px) * var(--at));
+		top: 4px;
+		width: 4px;
+		height: 8px;
+		margin-left: -2px;
+		border-radius: 2px;
+		background: var(--paper);
+	}
+	.range input[type='range'] {
+		position: absolute;
+		inset: 0;
+		height: 44px;
+		margin: 0;
+		background: none;
+		pointer-events: none;
+	}
+	.range input[type='range']::-webkit-slider-thumb {
+		pointer-events: auto;
+		cursor: grab;
+	}
+	.range input[type='range']::-moz-range-thumb {
+		pointer-events: auto;
+		cursor: grab;
+	}
+	.energy .ends {
+		grid-column: 1 / -1;
 	}
 	.ends {
 		display: flex;

@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "upload": "node --env-file=../.env upload.mjs ../out/tracks.jsonl"
+    "upload": "node --env-file=../.env upload.mjs ../out/tracks.jsonl",
+    "next": "node --env-file=../.env next.mjs"
   },
   "dependencies": {
     "node-appwrite": "latest"

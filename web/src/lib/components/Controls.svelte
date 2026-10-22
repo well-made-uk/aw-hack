@@ -5,7 +5,8 @@
 	 *   keyMode: 'strict' | 'loose' | 'any',
 	 *   energyMin: number,
 	 *   energyMax: number,
-	 *   current?: number
+	 *   current?: number,
+	 *   active?: boolean
 	 * }}
 	 */
 	let {
@@ -13,7 +14,8 @@
 		keyMode = $bindable(),
 		energyMin = $bindable(),
 		energyMax = $bindable(),
-		current
+		current,
+		active = true
 	} = $props();
 
 	const KEY_MODES = /** @type {const} */ (['strict', 'loose', 'any']);
@@ -61,13 +63,13 @@
 </script>
 
 <div class="controls">
-	<label class="fader">
+	<label class="fader" class:off={!active} title={active ? undefined : 'Pick a track to start with'}>
 		<span class="label">Pitch range</span>
 		<span class="readout">±{tolerance}%</span>
-		<input type="range" min="2" max="12" step="1" bind:value={tolerance} aria-label="BPM tolerance" />
+		<input type="range" min="2" max="12" step="1" disabled={!active} bind:value={tolerance} aria-label="BPM tolerance" />
 	</label>
 
-	<div class="knob-wrap">
+	<div class="knob-wrap" class:off={!active} title={active ? undefined : 'Pick a track to start with'}>
 		<span class="label">Key match</span>
 		<div class="knob-ring">
 			{#each KEY_MODES as m}
@@ -80,7 +82,7 @@
 				class="knob"
 				class:dragging={dragAngle !== null}
 				role="slider"
-				tabindex="0"
+				tabindex={active ? 0 : -1}
 				aria-label="Key match"
 				aria-valuemin="0"
 				aria-valuemax="2"
@@ -182,6 +184,12 @@
 		border: 3px solid var(--ink);
 		border-radius: 8px;
 		box-shadow: inset 0 -8px 0 var(--orange);
+	}
+	/* Pitch and key only mean something relative to a track on deck. */
+	.off {
+		opacity: 0.35;
+		filter: grayscale(1);
+		pointer-events: none;
 	}
 	.knob-wrap {
 		display: grid;

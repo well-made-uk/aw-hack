@@ -417,7 +417,12 @@
 
 	const sorting = $derived(sortByMatch && Boolean(playing));
 	const crate = $derived.by(() => {
-		const found = tracks.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()));
+		// The energy range works before anything is playing too, so you can pick a starting mood.
+		const found = tracks.filter(
+			(t) =>
+				`${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()) &&
+				(!t.energy || (t.energy >= energyMin && t.energy <= energyMax))
+		);
 		if (!sorting) return found;
 		return found
 			.filter((t) => crateMatches.has(t.id))
@@ -588,7 +593,7 @@
 		</section>
 
 		<aside>
-			<Controls bind:tolerance bind:keyMode bind:energyMin bind:energyMax current={playing?.energy} />
+			<Controls bind:tolerance bind:keyMode bind:energyMin bind:energyMax current={playing?.energy} active={Boolean(playing)} />
 		</aside>
 	</main>
 
@@ -678,7 +683,7 @@
 					<label class="sort">
 						<input type="checkbox" bind:checked={sortByMatch} />
 						<span class="switch" aria-hidden="true"></span>
-						Mixable matches for <strong>{playing.title}</strong>
+						Sort by similarity
 					</label>
 					<button class="close" onclick={() => (crateOpen = false)} aria-label="Close">✕</button>
 				{/if}
@@ -692,6 +697,8 @@
 				<div class="sleeves">
 					{#if sorting && !crate.length}
 						<p class="no-matches">No mixable tracks with these settings. Widen the pitch range, key match or energy →</p>
+					{:else if !crate.length && tracks.length}
+						<p class="no-matches">Nothing in this energy range. Widen it →</p>
 					{/if}
 					{#each crate as t (t.id)}
 						<button

@@ -16,7 +16,7 @@ import { compatibleKeys, mixableBpms } from '#lib/camelot.js';
 import { demoTracks } from './demo.js';
 
 /**
- * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number }} TrackMeta
+ * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number, file?: string }} TrackMeta
  * @typedef {{ id: string, embeddings: number[], metadata: TrackMeta }} StoredTrack
  * @typedef {TrackMeta & { id: string, sig: number[] }} Track
  * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number }} NextOptions
@@ -55,7 +55,8 @@ function signature(vec) {
 
 /** @param {StoredTrack} t @returns {Track} */
 function toTrack(t) {
-	return { id: t.id, ...t.metadata, sig: signature(t.embeddings) };
+	const { file, ...meta } = t.metadata; // file paths stay on the server
+	return { id: t.id, ...meta, sig: signature(t.embeddings) };
 }
 
 /** @param {any} doc @returns {StoredTrack} */
@@ -87,6 +88,11 @@ async function allStored() {
 	}
 	cache = { at: Date.now(), tracks };
 	return tracks;
+}
+
+/** The stored track, including its file path relative to MUSIC_DIR. @param {string} id */
+export async function getStored(id) {
+	return (await allStored()).find((t) => t.id === id) ?? null;
 }
 
 export async function listTracks() {

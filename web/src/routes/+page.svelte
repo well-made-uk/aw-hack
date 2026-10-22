@@ -27,6 +27,55 @@
 
 	let stageWidth = $state(640);
 
+	// Hover previews, streamed from your own music folder (only when MUSIC_DIR is set).
+	/** @type {string | null} */
+	let previewId = $state(null);
+	/** @type {HTMLAudioElement | undefined} */
+	let audio = $state();
+	/** @type {ReturnType<typeof setTimeout> | undefined} */
+	let hoverTimer;
+	/** @type {ReturnType<typeof setInterval> | undefined} */
+	let fadeTimer;
+
+	/** @param {number} to @param {() => void} [done] */
+	function fade(to, done) {
+		clearInterval(fadeTimer);
+		fadeTimer = setInterval(() => {
+			if (!audio) return;
+			const v = audio.volume + (to > audio.volume ? 0.1 : -0.1);
+			audio.volume = Math.min(1, Math.max(0, v));
+			if (Math.abs(audio.volume - to) < 0.05) {
+				audio.volume = to;
+				clearInterval(fadeTimer);
+				done?.();
+			}
+		}, 30);
+	}
+
+	/** Hovering a record previews it; leaving fades it out. @param {string | null} id */
+	function hover(id) {
+		if (!data.previews) return;
+		clearTimeout(hoverTimer);
+		hoverTimer = setTimeout(() => (id ? startPreview(id) : stopPreview()), id ? 200 : 120);
+	}
+
+	/** @param {string} id */
+	function startPreview(id) {
+		if (!audio || previewId === id) return;
+		previewId = id;
+		// Jump in 40% through, past the intro, where the track is in full flow.
+		const start = Math.round((byId.get(id)?.duration ?? 300) * 0.4);
+		audio.src = `/api/preview/${id}#t=${start}`;
+		audio.volume = 0;
+		audio.play().then(() => fade(1)).catch(() => (previewId = null));
+	}
+
+	function stopPreview() {
+		if (!previewId) return;
+		previewId = null;
+		fade(0, () => audio?.pause());
+	}
+
 	const byId = $derived(new Map(data.tracks.map((t) => [t.id, t])));
 	const playing = $derived(playingId ? byId.get(playingId) : null);
 
@@ -44,6 +93,8 @@
 
 	/** @param {string} id */
 	function play(id) {
+		clearTimeout(hoverTimer);
+		stopPreview();
 		if (id === playingId) return;
 		if (playing) setlist = [...setlist, playing];
 		playingId = id;
@@ -134,16 +185,9 @@
 	);
 </script>
 
-<div class="page">
-	<!-- background doodles -->
-	<svg class="doodle d1" viewBox="0 0 100 100" aria-hidden="true"
-		><path d="M50 5 L61 39 L95 39 L67 60 L78 95 L50 73 L22 95 L33 60 L5 39 L39 39Z" /></svg
-	>
-	<svg class="doodle d2" viewBox="0 0 200 60" aria-hidden="true"
-		><path d="M5 30 Q 30 0 55 30 T 105 30 T 155 30 T 195 30" /></svg
-	>
-	<svg class="doodle d3" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="40" /></svg>
+<audio bind:this={audio} preload="none"></audio>
 
+<div class="page">
 	<header>
 		<h1>Next<span>Track</span></h1>
 		<span class="source" class:live={data.source === 'vectorsdb'}>
@@ -162,9 +206,6 @@
 					<span class="sticker key" style="--h:{sliceHue(playing.camelot)}">{playing.camelot}</span>
 					{#if playing.genre}<span class="sticker genre">{playing.genre}</span>{/if}
 				</div>
-				<p class="hint">
-					Closer records <em>sound</em> more alike.<br />Drag one onto the deck to play it next.
-				</p>
 			{:else}
 				<p class="kicker">Start here</p>
 				<h2>Pick a record to drop.</h2>
@@ -226,8 +267,10 @@
 						size={p.size}
 						delay={p.delay}
 						bpmDelta={p.bpmDelta}
+						previewing={previewId === p.track.id}
 						ondrop={drop}
 						onplay={play}
+						onhover={hover}
 					/>
 				{/each}
 				{#if result && result.suggestions.length === 0}
@@ -269,8 +312,14 @@
 			</div>
 			<div class="sleeves">
 				{#each crate as t (t.id)}
-					<button class="sleeve" style="--h:{sliceHue(t.camelot)}" onclick={() => play(t.id)}>
-						<span class="peek"><Record sig={t.sig} size={150} /></span>
+					<button
+						class="sleeve"
+						style="--h:{sliceHue(t.camelot)}"
+						onclick={() => play(t.id)}
+						onpointerenter={() => hover(t.id)}
+						onpointerleave={() => hover(null)}
+					>
+						<span class="peek"><Record sig={t.sig} size={150} spinning={previewId === t.id} /></span>
 						<span class="sleeve-title">{t.title}</span>
 						<span class="sleeve-meta">{t.artist}</span>
 						<span class="sleeve-tags">{Math.round(t.bpm)} · {t.camelot}</span>
@@ -380,14 +429,6 @@
 		font-size: 16px;
 		align-self: center;
 		rotate: -2deg;
-	}
-	.hint {
-		margin: 26px 0 0;
-		font-size: 16px;
-		line-height: 1.4;
-		max-width: 260px;
-		padding-left: 14px;
-		border-left: 4px solid var(--orange);
 	}
 	.dig {
 		margin-top: 26px;
@@ -683,48 +724,6 @@
 		opacity: 0.7;
 	}
 
-	.doodle {
-		position: absolute;
-		fill: none;
-		stroke: var(--ink);
-		stroke-width: 4;
-		stroke-linejoin: round;
-		stroke-linecap: round;
-		opacity: 0.18;
-		pointer-events: none;
-	}
-	.d1 {
-		width: 90px;
-		right: 6%;
-		top: 30px;
-		fill: var(--yellow);
-		opacity: 1;
-		animation: twinkle 6s ease-in-out infinite;
-	}
-	.d2 {
-		width: 220px;
-		left: 2%;
-		bottom: 22%;
-		stroke: var(--orange);
-		opacity: 0.8;
-		stroke-width: 6;
-	}
-	.d3 {
-		width: 120px;
-		right: 2%;
-		bottom: 18%;
-		stroke: var(--blue);
-		opacity: 0.5;
-		stroke-dasharray: 4 12;
-		animation: twinkle 12s linear infinite;
-	}
-	@keyframes twinkle {
-		50% {
-			rotate: 25deg;
-			scale: 1.1;
-		}
-	}
-
 	@media (max-width: 1000px) {
 		main {
 			grid-template-columns: 1fr;
@@ -739,9 +738,6 @@
 		}
 		.crate-head h2 {
 			font-size: 30px;
-		}
-		.doodle {
-			display: none;
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {

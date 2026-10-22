@@ -9,5 +9,7 @@ export const variables = defineEnvVars({
 	APPWRITE_PROJECT_ID: { schema: optional },
 	APPWRITE_API_KEY: { schema: optional },
 	VECTORS_DATABASE_ID: { schema: (value) => value || 'nexttrack' },
-	TRACKS_COLLECTION_ID: { schema: (value) => value || 'tracks' }
+	TRACKS_COLLECTION_ID: { schema: (value) => value || 'tracks' },
+	// Folder analyse.py was run on. When set, hovering a record previews it from your own files.
+	MUSIC_DIR: { schema: optional }
 });

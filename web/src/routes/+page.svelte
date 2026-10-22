@@ -78,25 +78,61 @@
 	function hover(id) {
 		if (!data.previews) return;
 		clearTimeout(hoverTimer);
+		hoverId = id;
 		hoverTimer = setTimeout(() => (id ? startPreview(id) : stopPreview()), id ? 200 : 120);
 	}
+
+	// Browsers only allow sound after the page has had a click or key press. Until then a hover
+	// can't start a preview, so we say so, and retry the hovered record on the first click.
+	let previewsLocked = $state(false);
+	/** @type {string | null} */
+	let hoverId = null;
+	// Bumped on every start/stop, so a slow load or a rejected play() from an earlier hover
+	// can't stomp on the current one.
+	let previewGen = 0;
 
 	/** @param {string} id */
 	function startPreview(id) {
 		if (!audio || previewId === id) return;
+		const gen = ++previewGen;
+		const el = audio;
 		previewId = id;
+		clearInterval(fadeTimer);
+		el.pause();
+		el.volume = 0;
 		// Start just before the track's biggest moment, or 40% in for older analyses.
 		const t = byId.get(id);
-		const start = Math.round(t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4);
-		audio.src = `/api/preview/${id}#t=${start}`;
-		audio.volume = 0;
-		audio.play().then(() => fade(1)).catch(() => (previewId = null));
+		const start = t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4;
+		el.src = `/api/preview/${id}`;
+		el.addEventListener(
+			'loadedmetadata',
+			() => {
+				if (gen !== previewGen) return;
+				el.currentTime = Math.min(start, Math.max(0, el.duration - 10));
+				el.play()
+					.then(() => gen === previewGen && fade(1))
+					.catch((/** @type {Error} */ e) => {
+						if (gen !== previewGen) return;
+						previewId = null;
+						if (e.name === 'NotAllowedError') previewsLocked = true;
+					});
+			},
+			{ once: true }
+		);
+		el.load();
 	}
 
 	function stopPreview() {
+		previewGen++;
 		if (!previewId) return;
 		previewId = null;
 		fade(0, () => audio?.pause());
+	}
+
+	function unlockPreviews() {
+		if (!previewsLocked) return;
+		previewsLocked = false;
+		if (hoverId) startPreview(hoverId);
 	}
 
 	// One floating info card, shared by every record on screen.
@@ -300,7 +336,9 @@
 	});
 </script>
 
-<audio bind:this={audio} preload="none"></audio>
+<svelte:window onpointerdown={unlockPreviews} onkeydown={unlockPreviews} />
+
+<audio bind:this={audio} preload="none" onerror={() => (previewId = null)}></audio>
 
 <div class="page">
 	<header>
@@ -534,6 +572,10 @@
 	{/if}
 
 
+	{#if previewsLocked}
+		<p class="unlock">🔈 Click anywhere to switch on previews</p>
+	{/if}
+
 	{#if card}
 		<TrackCard {...card} previewing={previewId === card.track.id} />
 	{/if}
@@ -579,6 +621,21 @@
 	}
 	.source.live {
 		background: var(--teal);
+	}
+	.unlock {
+		position: fixed;
+		left: 50%;
+		bottom: 22px;
+		translate: -50% 0;
+		z-index: 90;
+		margin: 0;
+		padding: 10px 16px;
+		font-weight: 700;
+		background: var(--yellow);
+		border: 3px solid var(--ink);
+		border-radius: 14px;
+		box-shadow: 4px 4px 0 var(--ink);
+		pointer-events: none;
 	}
 	.tour-slot {
 		margin-left: auto;

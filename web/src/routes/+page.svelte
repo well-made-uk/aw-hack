@@ -91,8 +91,17 @@
 		return Math.round(t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4);
 	}
 
+	// Master sound switch: off silences the deck and stops hover previews until it's back on.
+	let muted = $state(false);
+	function toggleSound() {
+		muted = !muted;
+		for (const el of [deck, cue]) if (el) el.muted = muted;
+		if (muted) stopPreview();
+	}
+
 	/** Hovering a record previews it; leaving goes back to the deck. @param {string | null} id */
 	function hover(id) {
+		if (muted) return;
 		if (!data.previews) {
 			// Say why hovering is silent, rather than failing quietly.
 			if (id && data.source === 'vectorsdb') previewsOff = true;
@@ -509,6 +518,11 @@
 		{:else}
 			<button class="how" onclick={() => ((crateOpen = true), tourTo(1))}>? How it works</button>
 		{/if}
+		{#if data.previews}
+			<button class="sound" class:muted onclick={toggleSound} aria-pressed={muted} aria-label={muted ? 'Turn sound on' : 'Turn sound off'}>
+				{muted ? '🔇 Sound off' : '🔊 Sound on'}
+			</button>
+		{/if}
 	</header>
 
 	<main>
@@ -848,6 +862,24 @@
 		cursor: pointer;
 		rotate: 2deg;
 	}
+	.sound {
+		font-weight: 700;
+		font-size: 13px;
+		padding: 6px 12px;
+		border: 2.5px solid var(--ink);
+		border-radius: 99px;
+		background: var(--teal);
+		box-shadow: 3px 3px 0 var(--ink);
+		cursor: pointer;
+		rotate: -2deg;
+	}
+	.tour-slot + .sound {
+		align-self: center;
+	}
+	.sound.muted {
+		background: var(--paper);
+	}
+	.sound:active,
 	.how:active {
 		translate: 2px 2px;
 		box-shadow: 1px 1px 0 var(--ink);

@@ -768,7 +768,7 @@
 	{#if previewsLocked}
 		<p class="unlock">🔈 Click anywhere to switch on previews</p>
 	{:else if previewsOff}
-		<p class="unlock">🔇 Previews are off: set MUSIC_DIR in .env, then restart the app</p>
+		<p class="unlock">🔇 Audio previews only play when the app runs locally with your music folder (MUSIC_DIR)</p>
 	{/if}
 
 	{#if card}

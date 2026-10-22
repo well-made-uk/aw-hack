@@ -161,7 +161,9 @@
 	$effect(() => {
 		if (!playingId) return;
 		const id = playingId;
-		const params = new URLSearchParams({ id, keys: keyMode, energy, tol: String(tolerance) });
+		// Ask for extra so the wheel stays full after hiding tracks already in the set.
+		const limit = String(Math.min(100, 20 + untrack(() => setlist.length)));
+		const params = new URLSearchParams({ id, keys: keyMode, energy, tol: String(tolerance), limit });
 		loadingNext = true;
 		fetch(`/api/next?${params}`)
 			.then((r) => r.json())
@@ -230,7 +232,9 @@
 	/** @param {string} code */
 	const sliceHue = (code) => ((parseInt(code, 10) - 1) * 30 + 200) % 360;
 
-	const shown = $derived(result ? result.suggestions.filter((s) => s.match >= MIN_MATCH) : []);
+	// Tracks already in the set stay off the wheel and are greyed out in the crate.
+	const played = $derived(new Set(setlist.map((t) => t.id)));
+	const shown = $derived(result ? result.suggestions.filter((s) => s.match >= MIN_MATCH && !played.has(s.id)) : []);
 
 	// Lay suggestions out in their key's slice: closer to the deck and bigger = sounds more alike.
 	const placed = $derived.by(() => {
@@ -541,6 +545,7 @@
 					{#each crate as t (t.id)}
 						<button
 							class="sleeve"
+							class:played={played.has(t.id)}
 							style="--h:{sliceHue(t.camelot)}"
 							onclick={() => play(t.id)}
 							onpointerenter={() => hover(t.id)}
@@ -555,6 +560,8 @@
 							{/if}
 							{#if t.id === playing?.id}
 								<span class="sleeve-badge on-deck">On deck</span>
+							{:else if played.has(t.id)}
+								<span class="sleeve-badge">In your set</span>
 							{:else if sorting && crateMatches.has(t.id)}
 								<span class="sleeve-badge mix">{Math.round((crateMatches.get(t.id) ?? 0) * 100)}%</span>
 							{/if}
@@ -1076,6 +1083,14 @@
 	.sleeve:hover {
 		translate: 0 -8px;
 		rotate: -2deg;
+	}
+	.sleeve.played {
+		background: #ddd5c8;
+		box-shadow: 5px 5px 0 #1a142355;
+	}
+	.sleeve.played > :not(.sleeve-badge) {
+		filter: grayscale(1);
+		opacity: 0.55;
 	}
 	.peek {
 		display: block;

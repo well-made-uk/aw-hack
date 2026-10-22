@@ -76,7 +76,11 @@
 
 	/** Hovering a record previews it; leaving fades it out. @param {string | null} id */
 	function hover(id) {
-		if (!data.previews) return;
+		if (!data.previews) {
+			// Say why hovering is silent, rather than failing quietly.
+			if (id && data.source === 'vectorsdb') previewsOff = true;
+			return;
+		}
 		clearTimeout(hoverTimer);
 		hoverId = id;
 		hoverTimer = setTimeout(() => (id ? startPreview(id) : stopPreview()), id ? 200 : 120);
@@ -85,6 +89,7 @@
 	// Browsers only allow sound after the page has had a click or key press. Until then a hover
 	// can't start a preview, so we say so, and retry the hovered record on the first click.
 	let previewsLocked = $state(false);
+	let previewsOff = $state(false);
 	/** @type {string | null} */
 	let hoverId = null;
 	// Bumped on every start/stop, so a slow load or a rejected play() from an earlier hover
@@ -98,28 +103,29 @@
 		const el = audio;
 		previewId = id;
 		clearInterval(fadeTimer);
-		el.pause();
 		el.volume = 0;
 		// Start just before the track's biggest moment, or 40% in for older analyses.
 		const t = byId.get(id);
-		const start = t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4;
-		el.src = `/api/preview/${id}`;
+		const start = Math.round(t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4);
+		// play() straight away: it's what makes every browser (Safari included) start loading,
+		// and it's where a blocked autoplay shows up. The #t fragment seeks on load; the
+		// loadedmetadata check covers browsers that ignore it.
+		el.src = `/api/preview/${id}#t=${start}`;
 		el.addEventListener(
 			'loadedmetadata',
 			() => {
-				if (gen !== previewGen) return;
-				el.currentTime = Math.min(start, Math.max(0, el.duration - 10));
-				el.play()
-					.then(() => gen === previewGen && fade(1))
-					.catch((/** @type {Error} */ e) => {
-						if (gen !== previewGen) return;
-						previewId = null;
-						if (e.name === 'NotAllowedError') previewsLocked = true;
-					});
+				if (gen === previewGen && Math.abs(el.currentTime - start) > 2) el.currentTime = start;
 			},
 			{ once: true }
 		);
-		el.load();
+		el.play()
+			.then(() => gen === previewGen && fade(1))
+			.catch((/** @type {Error} */ e) => {
+				if (gen !== previewGen) return;
+				previewId = null;
+				if (e.name === 'NotAllowedError') previewsLocked = true;
+				else console.warn('Preview failed:', e);
+			});
 	}
 
 	function stopPreview() {
@@ -129,10 +135,32 @@
 		fade(0, () => audio?.pause());
 	}
 
+	// Safari only lets an audio element play from code once it has played inside a click.
+	// So the first click anywhere plays a blip of silence on it, then retries the hovered record.
+	let primed = false;
 	function unlockPreviews() {
+		if (!primed && audio && !previewId) {
+			primed = true;
+			const el = audio;
+			el.src = silence();
+			el.play().then(() => el.pause(), () => {});
+		}
 		if (!previewsLocked) return;
 		previewsLocked = false;
 		if (hoverId) startPreview(hoverId);
+	}
+
+	/** A tenth of a second of silent WAV, as a blob URL. */
+	function silence() {
+		const n = 800;
+		const buf = new DataView(new ArrayBuffer(44 + n));
+		const str = (/** @type {number} */ at, /** @type {string} */ s) => [...s].forEach((c, i) => buf.setUint8(at + i, c.charCodeAt(0)));
+		str(0, 'RIFF'), buf.setUint32(4, 36 + n, true), str(8, 'WAVEfmt ');
+		buf.setUint32(16, 16, true), buf.setUint16(20, 1, true), buf.setUint16(22, 1, true);
+		buf.setUint32(24, 8000, true), buf.setUint32(28, 8000, true), buf.setUint16(32, 1, true), buf.setUint16(34, 8, true);
+		str(36, 'data'), buf.setUint32(40, n, true);
+		for (let i = 0; i < n; i++) buf.setUint8(44 + i, 128);
+		return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 	}
 
 	// One floating info card, shared by every record on screen.
@@ -385,7 +413,7 @@
 	}}
 />
 
-<audio bind:this={audio} preload="none" onerror={() => (previewId = null)}></audio>
+<audio bind:this={audio} preload="auto"></audio>
 
 <div class="page">
 	<header>
@@ -635,6 +663,8 @@
 
 	{#if previewsLocked}
 		<p class="unlock">🔈 Click anywhere to switch on previews</p>
+	{:else if previewsOff}
+		<p class="unlock">🔇 Previews are off: set MUSIC_DIR in .env, then restart the app</p>
 	{/if}
 
 	{#if card}

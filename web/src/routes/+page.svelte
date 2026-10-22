@@ -1,23 +1,38 @@
 <script>
 	import Record from '#lib/components/Record.svelte';
+	import LabelArt from '#lib/components/LabelArt.svelte';
 	import Suggestion from '#lib/components/Suggestion.svelte';
 	import Controls from '#lib/components/Controls.svelte';
-	import { compatibleKeys, keyAngle, mixableBpms } from '#lib/camelot.js';
+	import TrackCard from '#lib/components/TrackCard.svelte';
+	import { compatibleKeys, energyLevels, keyAngle, mixableBpms } from '#lib/camelot.js';
 
 	/** @typedef {import('#lib/server/tracks.js').Track} Track */
 	/** @typedef {Track & { match: number }} Suggested */
 
+	// Weaker matches than this stay off the wheel.
+	const MIN_MATCH = 0.55;
+
 	let { data } = $props();
+
+	// The crate streams in after first paint (it can take a few seconds with a big library).
+	/** @type {Track[]} */
+	let tracks = $state([]);
+	let crateLoading = $state(true);
+	$effect(() => {
+		Promise.resolve(data.tracks).then((t) => {
+			tracks = t;
+			crateLoading = false;
+		});
+	});
 
 	/** @type {string | null} */
 	let playingId = $state(null);
-	/** @type {{ playing: Track, suggestions: Suggested[] } | null} */
-	let result = $state(null);
+	let result = $state(/** @type {{ playing: Track, suggestions: Suggested[] } | null} */ (null));
+	let loadingNext = $state(false);
 	/** @type {Track[]} */
 	let setlist = $state([]);
 	let crateOpen = $state(true);
 	let search = $state('');
-	let armDown = $state(false);
 
 	let tolerance = $state(6);
 	/** @type {'strict' | 'loose' | 'any'} */
@@ -69,8 +84,9 @@
 	function startPreview(id) {
 		if (!audio || previewId === id) return;
 		previewId = id;
-		// Jump in 40% through, past the intro, where the track is in full flow.
-		const start = Math.round((byId.get(id)?.duration ?? 300) * 0.4);
+		// Start just before the track's biggest moment, or 40% in for older analyses.
+		const t = byId.get(id);
+		const start = Math.round(t?.peak_at !== undefined ? Math.max(0, t.peak_at - 4) : (t?.duration ?? 300) * 0.4);
 		audio.src = `/api/preview/${id}#t=${start}`;
 		audio.volume = 0;
 		audio.play().then(() => fade(1)).catch(() => (previewId = null));
@@ -82,7 +98,26 @@
 		fade(0, () => audio?.pause());
 	}
 
-	const byId = $derived(new Map(data.tracks.map((t) => [t.id, t])));
+	// One floating info card, shared by every record on screen.
+	/** @type {{ track: Track, rect: DOMRect, match?: number | null, label?: string, bpmDelta?: number | null } | null} */
+	let card = $state(null);
+
+	/**
+	 * @param {Track} track
+	 * @param {HTMLElement} el
+	 * @param {{ match?: number | null, label?: string, bpmDelta?: number | null }} [extra]
+	 */
+	function hoverOn(track, el, extra = {}) {
+		card = { track, rect: el.getBoundingClientRect(), ...extra };
+		hover(track.id);
+	}
+
+	function hoverOff() {
+		card = null;
+		hover(null);
+	}
+
+	const byId = $derived(new Map(tracks.map((t) => [t.id, t])));
 	const playing = $derived(playingId ? byId.get(playingId) : null);
 
 	// Ask VectorsDB for the next tracks whenever the deck or a control changes.
@@ -90,23 +125,47 @@
 		if (!playingId) return;
 		const id = playingId;
 		const params = new URLSearchParams({ id, keys: keyMode, energy, tol: String(tolerance) });
+		loadingNext = true;
 		fetch(`/api/next?${params}`)
 			.then((r) => r.json())
 			.then((d) => {
-				if (id === playingId) result = d;
-			});
+				if (id !== playingId) return;
+				result = d;
+				loadingNext = false;
+			})
+			.catch(() => (loadingNext = false));
 	});
 
 	/** @param {string} id */
 	function play(id) {
 		clearTimeout(hoverTimer);
 		stopPreview();
+		card = null;
 		if (id === playingId) return;
 		if (playing) setlist = [...setlist, playing];
 		playingId = id;
 		crateOpen = false;
-		armDown = false;
-		setTimeout(() => (armDown = true), 450);
+	}
+
+	// Set list editing: remove, and drag to reorder (the track on deck stays last).
+	/** @param {number} i */
+	function removeFromSet(i) {
+		setlist = setlist.filter((_, j) => j !== i);
+		card = null;
+	}
+
+	/** @type {number | null} */
+	let dragFrom = $state(null);
+	/** @type {number | null} */
+	let dragOver = $state(null);
+
+	/** @param {number} to */
+	function dropInSet(to) {
+		if (dragFrom === null || dragFrom === to) return;
+		const next = [...setlist];
+		const [moved] = next.splice(dragFrom, 1);
+		next.splice(to, 0, moved);
+		setlist = next;
 	}
 
 	// Geometry: everything is relative to the square stage.
@@ -134,25 +193,26 @@
 	/** @param {string} code */
 	const sliceHue = (code) => ((parseInt(code, 10) - 1) * 30 + 200) % 360;
 
-	// Lay suggestions out in their key's slice, closer to the deck = sounds more alike.
+	const shown = $derived(result ? result.suggestions.filter((s) => s.match >= MIN_MATCH) : []);
+
+	// Lay suggestions out in their key's slice: closer to the deck and bigger = sounds more alike.
 	const placed = $derived.by(() => {
-		if (!result || !playing) return [];
-		const list = result.suggestions;
-		const hi = Math.max(...list.map((s) => s.match));
-		const lo = Math.min(...list.map((s) => s.match));
+		if (!playing || !shown.length) return [];
+		const hi = Math.max(...shown.map((s) => s.match));
+		const lo = Math.min(...shown.map((s) => s.match));
 		/** @type {{ [key: string]: number }} */
 		const perKey = {};
 		const spread = [0, 14, -14, 26, -26, 36, -36];
-		const items = list.map((s, i) => {
+		const items = shown.map((s, i) => {
 			const slot = (perKey[s.camelot] = (perKey[s.camelot] ?? -1) + 1);
-			const bpmDelta = Math.round(s.bpm - playing.bpm);
-			const size = R * 0.23 * (1 - Math.min(Math.abs(bpmDelta) / 12, 0.35));
+			const strength = Math.min(1, (s.match - MIN_MATCH) / (1 - MIN_MATCH));
+			const size = R * (0.13 + 0.13 * strength);
 			const closeness = hi === lo ? 1 : (s.match - lo) / (hi - lo);
 			const rIn = deckR + size / 2 + 10;
 			const rOut = orbitMax - size / 2;
 			const r = rOut - closeness * (rOut - rIn);
 			const { x, y } = polar(keyAngle(s.camelot) + spread[slot % spread.length], r);
-			return { track: s, x, y, size, bpmDelta, delay: i * 60 };
+			return { track: s, x, y, size, bpmDelta: Math.round(s.bpm - playing.bpm), delay: i * 60 };
 		});
 		// Nudge overlapping records apart, keeping them inside the orbit ring.
 		for (let iter = 0; iter < 60; iter++) {
@@ -196,16 +256,21 @@
 			});
 	});
 
-	/** Would this track mix in with the current pitch range and key settings? @param {Track} t */
+	/** Would this track mix in with the current pitch, key and energy settings? @param {Track} t */
 	function mixable(t) {
 		if (!playing || t.id === playing.id) return false;
 		const keys = compatibleKeys(playing.camelot, keyMode);
-		return (!keys || keys.includes(t.camelot)) && mixableBpms(playing.bpm, tolerance, energy).includes(String(Math.round(t.bpm)));
+		const levels = energyLevels(playing.energy, energy);
+		return (
+			(!keys || keys.includes(t.camelot)) &&
+			(!levels || levels.includes(String(t.energy))) &&
+			mixableBpms(playing.bpm, tolerance).includes(String(Math.round(t.bpm)))
+		);
 	}
 
 	const sorting = $derived(sortByMatch && Boolean(playing) && crateMatches.size > 0);
 	const crate = $derived.by(() => {
-		const found = data.tracks.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()));
+		const found = tracks.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(search.toLowerCase()));
 		if (!sorting) return found;
 		// Best matches first; tracks outside the top results keep crate order after them.
 		return found.toSorted((a, b) => (crateMatches.get(b.id) ?? -1) - (crateMatches.get(a.id) ?? -1));
@@ -231,6 +296,7 @@
 				<div class="stickers">
 					<span class="sticker bpm">{Math.round(playing.bpm)}<small>BPM</small></span>
 					<span class="sticker key" style="--h:{sliceHue(playing.camelot)}">{playing.camelot}</span>
+					{#if playing.energy}<span class="sticker energy">⚡{playing.energy}</span>{/if}
 					{#if playing.genre}<span class="sticker genre">{playing.genre}</span>{/if}
 				</div>
 			{:else}
@@ -242,71 +308,71 @@
 
 		<section class="stage" bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
 			<div class="square" style="width:{S}px; height:{S}px">
-			<svg class="wheel" width={S} height={S} aria-hidden="true">
-				{#each SLICES as code}
-					{@const n = parseInt(code, 10)}
-					{@const a = (n - 1) * 30}
-					{@const outer = code.endsWith('B')}
-					{@const lit = glowing.has(code)}
-					{@const isNow = playing?.camelot === code}
-					<path
-						d={sector(a - 15, a + 15, outer ? R * 0.86 : R * 0.73, outer ? R : R * 0.86)}
-						fill="hsl({sliceHue(code)} {lit ? 85 : 30}% {isNow ? 55 : lit ? 70 : outer ? 88 : 82}%)"
-						stroke="var(--ink)"
-						stroke-width="2.5"
-						class="slice"
-						class:lit
-					/>
-					{@const p = polar(a, outer ? R * 0.93 : R * 0.795)}
-					<text x={p.x} y={p.y} font-size={Math.max(8, R * 0.042)} class="slice-label" class:lit dominant-baseline="central" text-anchor="middle"
-						>{code}</text
-					>
-				{/each}
-				<circle cx={C} cy={C} r={orbitMax + 4} fill="none" stroke="var(--ink)" stroke-width="2" stroke-dasharray="2 10" stroke-linecap="round" />
-			</svg>
-
-			{#if playing}
-				<div class="pulse" style="--size:{deckR * 2.25}px; --beat:{60 / playing.bpm}s; left:{C}px; top:{C}px"></div>
-				{#key playing.id}
-					<div class="deck" style="--size:{deckR * 2}px; left:{C}px; top:{C}px">
-						<Record sig={playing.sig} size={deckR * 2} spinning title={playing.title} />
-					</div>
-				{/key}
-				<svg
-					class="arm"
-					class:down={armDown}
-					viewBox="0 0 120 240"
-					style="height:{deckR * 1.9}px; left:{C + deckR * 0.72}px; top:{C - deckR * 1.15}px"
-					aria-hidden="true"
-				>
-					<circle cx="90" cy="24" r="20" fill="var(--paper)" stroke="var(--ink)" stroke-width="5" />
-					<circle cx="90" cy="24" r="7" fill="var(--ink)" />
-					<path d="M90 24 L88 150 Q86 190 52 214" fill="none" stroke="var(--ink)" stroke-width="9" stroke-linecap="round" />
-					<rect x="30" y="204" width="34" height="20" rx="4" transform="rotate(35 47 214)" fill="var(--orange)" stroke="var(--ink)" stroke-width="5" />
+				<svg class="wheel" width={S} height={S} aria-hidden="true">
+					{#each SLICES as code}
+						{@const n = parseInt(code, 10)}
+						{@const a = (n - 1) * 30}
+						{@const outer = code.endsWith('B')}
+						{@const lit = glowing.has(code)}
+						{@const isNow = playing?.camelot === code}
+						<path
+							d={sector(a - 15, a + 15, outer ? R * 0.86 : R * 0.73, outer ? R : R * 0.86)}
+							fill="hsl({sliceHue(code)} {lit ? 85 : 30}% {isNow ? 55 : lit ? 70 : outer ? 88 : 82}%)"
+							stroke="var(--ink)"
+							stroke-width="2.5"
+							class="slice"
+						/>
+						{@const p = polar(a, outer ? R * 0.93 : R * 0.795)}
+						<text
+							x={p.x}
+							y={p.y}
+							font-size={Math.max(8, R * 0.042)}
+							class="slice-label"
+							class:lit
+							dominant-baseline="central"
+							text-anchor="middle">{code}</text
+						>
+					{/each}
+					<circle cx={C} cy={C} r={orbitMax + 4} fill="none" stroke="var(--ink)" stroke-width="2" stroke-dasharray="2 10" stroke-linecap="round" />
 				</svg>
 
-				{#each placed as p (p.track.id)}
-					<Suggestion
-						track={p.track}
-						x={p.x}
-						y={p.y}
-						cx={C}
-						cy={C}
-						size={p.size}
-						delay={p.delay}
-						bpmDelta={p.bpmDelta}
-						previewing={previewId === p.track.id}
-						ondrop={drop}
-						onplay={play}
-						onhover={hover}
-					/>
-				{/each}
-				{#if result && result.suggestions.length === 0}
-					<p class="empty" style="left:{C}px; top:{C + deckR + 30}px">Nothing mixable. Loosen the key or pitch range →</p>
+				{#if playing}
+					{#key playing.id}
+						<div
+							class="deck"
+							role="img"
+							aria-label="On deck: {playing.title}"
+							style="--size:{deckR * 2}px; left:{C}px; top:{C}px"
+							onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
+							onpointerleave={hoverOff}
+						>
+							<Record sig={playing.sig} size={deckR * 2} spinning title={playing.title} />
+						</div>
+					{/key}
+
+					{#each placed as p (p.track.id)}
+						<Suggestion
+							track={p.track}
+							x={p.x}
+							y={p.y}
+							cx={C}
+							cy={C}
+							size={p.size}
+							delay={p.delay}
+							previewing={previewId === p.track.id}
+							ondrop={drop}
+							onplay={play}
+							onhover={(el) => (el ? hoverOn(p.track, el, { match: p.track.match, bpmDelta: p.bpmDelta }) : hoverOff())}
+						/>
+					{/each}
+					{#if loadingNext}
+						<p class="status" style="left:{C}px; top:{C + deckR + 24}px"><span class="spinner"></span> Finding matches…</p>
+					{:else if result && !shown.length}
+						<p class="status" style="left:{C}px; top:{C + deckR + 24}px">No close matches. Loosen key, pitch or energy →</p>
+					{/if}
+				{:else}
+					<div class="deck idle" style="--size:{deckR * 2}px; left:{C}px; top:{C}px"></div>
 				{/if}
-			{:else}
-				<div class="deck idle" style="--size:{deckR * 2}px; left:{C}px; top:{C}px"></div>
-			{/if}
 			</div>
 		</section>
 
@@ -317,18 +383,67 @@
 
 	<footer class="setlist">
 		<span class="kicker">Your set</span>
-		<svg class="cable" preserveAspectRatio="none" viewBox="0 0 100 20" aria-hidden="true"
-			><path d="M0 10 Q 12.5 0 25 10 T 50 10 T 75 10 T 100 10" /></svg
-		>
 		<ol>
-			{#each [...setlist, ...(playing ? [playing] : [])] as t, i (i)}
-				<li class:current={i === setlist.length}>
-					<Record sig={t.sig} size={64} />
-					<span>{t.title}</span>
+			{#each setlist as t, i (t.id + i)}
+				<li
+					class="set-card"
+					class:drag-over={dragOver === i && dragFrom !== i}
+					class:dragging={dragFrom === i}
+					draggable="true"
+					ondragstart={(e) => {
+						dragFrom = i;
+						card = null;
+						e.dataTransfer?.setData('text/plain', String(i));
+					}}
+					ondragover={(e) => {
+						e.preventDefault();
+						dragOver = i;
+					}}
+					ondragleave={() => dragOver === i && (dragOver = null)}
+					ondrop={(e) => {
+						e.preventDefault();
+						dropInSet(i);
+						dragFrom = dragOver = null;
+					}}
+					ondragend={() => (dragFrom = dragOver = null)}
+				>
+					<span
+						class="set-art"
+						role="img"
+						aria-label={t.title}
+						onpointerenter={(e) => hoverOn(t, e.currentTarget)}
+						onpointerleave={hoverOff}
+					>
+						<svg viewBox="-50 -50 100 100" width="52" height="52" aria-hidden="true"><LabelArt sig={t.sig} r={50} /></svg>
+					</span>
+					<span class="set-text">
+						<span class="set-n">{i + 1}</span>
+						<span class="set-title">{t.title}</span>
+						<span class="set-meta">{Math.round(t.bpm)} · {t.camelot}{t.energy ? ` · ⚡${t.energy}` : ''}</span>
+					</span>
+					<button class="set-remove" onclick={() => removeFromSet(i)} aria-label="Remove {t.title} from the set">✕</button>
+				</li>
+			{/each}
+			{#if playing}
+				<li class="set-card on-deck">
+					<span
+						class="set-art"
+						role="img"
+						aria-label={playing.title}
+						onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
+						onpointerleave={hoverOff}
+					>
+						<svg viewBox="-50 -50 100 100" width="52" height="52" aria-hidden="true"><LabelArt sig={playing.sig} r={50} /></svg>
+					</span>
+					<span class="set-text">
+						<span class="set-n">On deck</span>
+						<span class="set-title">{playing.title}</span>
+						<span class="set-meta">{Math.round(playing.bpm)} · {playing.camelot}{playing.energy ? ` · ⚡${playing.energy}` : ''}</span>
+					</span>
 				</li>
 			{:else}
 				<li class="placeholder">Records you play line up here.</li>
-			{/each}
+			{/if}
 		</ol>
 	</footer>
 
@@ -343,33 +458,47 @@
 						<span class="switch" aria-hidden="true"></span>
 						Sort by match to <strong>{playing.title}</strong>
 					</label>
+					<button class="close" onclick={() => (crateOpen = false)} aria-label="Close">✕</button>
 				{/if}
-				{#if playing}<button class="close" onclick={() => (crateOpen = false)} aria-label="Close">✕</button>{/if}
 			</div>
-			<div class="sleeves">
-				{#each crate as t (t.id)}
-					<button
-						class="sleeve"
-						style="--h:{sliceHue(t.camelot)}"
-						onclick={() => play(t.id)}
-						onpointerenter={() => hover(t.id)}
-						onpointerleave={() => hover(null)}
-					>
-						<span class="peek"><Record sig={t.sig} size={150} spinning={previewId === t.id} /></span>
-						<span class="sleeve-title">{t.title}</span>
-						<span class="sleeve-meta">{t.artist}</span>
-						<span class="sleeve-tags">{Math.round(t.bpm)} · {t.camelot}</span>
-						{#if t.id === playing?.id}
-							<span class="sleeve-badge on-deck">On deck</span>
-						{:else if sorting && crateMatches.has(t.id)}
-							<span class="sleeve-badge" class:mix={mixable(t)}>
-								{Math.round((crateMatches.get(t.id) ?? 0) * 100)}%{mixable(t) ? ' · mixable' : ''}
-							</span>
-						{/if}
-					</button>
-				{/each}
-			</div>
+			{#if crateLoading}
+				<div class="loader">
+					<span class="loader-record"><Record sig={Array(16).fill(0.02)} size={140} spinning /></span>
+					<p>Digging through your crate…</p>
+				</div>
+			{:else}
+				<div class="sleeves">
+					{#each crate as t (t.id)}
+						<button
+							class="sleeve"
+							style="--h:{sliceHue(t.camelot)}"
+							onclick={() => play(t.id)}
+							onpointerenter={() => hover(t.id)}
+							onpointerleave={() => hover(null)}
+						>
+							<span class="peek"><Record sig={t.sig} size={150} spinning={previewId === t.id} /></span>
+							<span class="sleeve-title">{t.title}</span>
+							<span class="sleeve-meta">{t.artist}</span>
+							<span class="sleeve-tags">{Math.round(t.bpm)} · {t.camelot}{t.energy ? ` · ⚡${t.energy}` : ''}</span>
+							{#if previewId === t.id}
+								<span class="sleeve-eq" aria-label="Previewing"><i></i><i></i><i></i><i></i></span>
+							{/if}
+							{#if t.id === playing?.id}
+								<span class="sleeve-badge on-deck">On deck</span>
+							{:else if sorting && crateMatches.has(t.id)}
+								<span class="sleeve-badge" class:mix={mixable(t)}>
+									{Math.round((crateMatches.get(t.id) ?? 0) * 100)}%{mixable(t) ? ' · mixable' : ''}
+								</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+			{/if}
 		</div>
+	{/if}
+
+	{#if card}
+		<TrackCard {...card} previewing={previewId === card.track.id} />
 	{/if}
 </div>
 
@@ -472,6 +601,10 @@
 		background: hsl(var(--h) 85% 70%);
 		rotate: 3deg;
 	}
+	.sticker.energy {
+		background: var(--teal);
+		rotate: -2deg;
+	}
 	.sticker.genre {
 		background: var(--pink);
 		font-size: 16px;
@@ -558,41 +691,12 @@
 			rotate: 0deg;
 		}
 	}
-	.pulse {
-		position: absolute;
-		width: var(--size);
-		height: var(--size);
-		translate: -50% -50%;
-		border-radius: 50%;
-		border: 6px solid var(--orange);
-		animation: pulse var(--beat) ease-out infinite;
-		pointer-events: none;
-	}
-	@keyframes pulse {
-		0% {
-			scale: 0.92;
-			opacity: 0.9;
-		}
-		100% {
-			scale: 1.12;
-			opacity: 0;
-		}
-	}
-	.arm {
-		position: absolute;
-		transform-origin: 75% 10%;
-		rotate: 28deg;
-		transition: rotate 0.5s cubic-bezier(0.3, 1.5, 0.5, 1);
-		z-index: 3;
-		pointer-events: none;
-		filter: drop-shadow(4px 5px 0 #1a142344);
-	}
-	.arm.down {
-		rotate: 0deg;
-	}
-	.empty {
+	.status {
 		position: absolute;
 		translate: -50% 0;
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		margin: 0;
 		font-weight: 700;
 		background: var(--paper);
@@ -602,11 +706,24 @@
 		white-space: nowrap;
 		z-index: 4;
 	}
+	.spinner {
+		width: 14px;
+		height: 14px;
+		border: 3px solid var(--ink);
+		border-right-color: transparent;
+		border-radius: 50%;
+		animation: turn 0.8s linear infinite;
+	}
+	@keyframes turn {
+		to {
+			rotate: 360deg;
+		}
+	}
 
 	.setlist {
 		position: relative;
 		margin: 0 -28px;
-		min-height: 108px;
+		min-height: 96px;
 		display: flex;
 		align-items: center;
 		gap: 16px;
@@ -615,67 +732,164 @@
 		border-top: 3px solid var(--ink);
 		z-index: 20;
 	}
-	.cable {
-		position: absolute;
-		left: 120px;
-		right: 0;
-		top: 38px;
-		width: calc(100% - 120px);
-		height: 20px;
-		fill: none;
-		stroke: var(--ink);
-		stroke-width: 1.2;
-		vector-effect: non-scaling-stroke;
-	}
-	.cable path {
-		stroke-width: 4px;
-		vector-effect: non-scaling-stroke;
-		stroke-dasharray: 1 0;
-	}
 	.setlist ol {
-		position: relative;
 		display: flex;
-		gap: 22px;
+		align-items: center;
+		gap: 12px;
 		list-style: none;
 		margin: 0;
-		padding: 0;
+		padding: 4px 4px 8px;
 		overflow-x: auto;
 	}
-	.setlist li {
-		display: grid;
-		justify-items: center;
-		gap: 4px;
-		width: 90px;
-		animation: pop 0.5s cubic-bezier(0.3, 1.8, 0.5, 1);
+	.set-card {
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex: none;
+		width: 210px;
+		padding: 6px 10px 6px 6px;
+		background: var(--cream);
+		border: 2.5px solid var(--ink);
+		border-radius: 14px;
+		box-shadow: 3px 3px 0 var(--ink);
+		cursor: grab;
+		animation: pop 0.4s cubic-bezier(0.3, 1.8, 0.5, 1);
+		transition:
+			translate 0.15s,
+			opacity 0.15s;
 	}
-	.setlist li span {
-		font-size: 11px;
+	.set-card.dragging {
+		opacity: 0.4;
+	}
+	.set-card.drag-over {
+		translate: 8px 0;
+		box-shadow: -6px 0 0 var(--orange), 3px 3px 0 var(--ink);
+	}
+	.set-card.on-deck {
+		background: var(--yellow);
+		cursor: default;
+	}
+	.set-art {
+		flex: none;
+		display: block;
+		width: 52px;
+		height: 52px;
+		border-radius: 8px;
+		overflow: hidden;
+		border: 2px solid var(--ink);
+	}
+	.set-art svg {
+		display: block;
+	}
+	.set-text {
+		display: grid;
+		min-width: 0;
+		line-height: 1.2;
+	}
+	.set-n {
+		font-family: var(--display);
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 1px;
+		opacity: 0.6;
+	}
+	.set-title {
 		font-weight: 700;
-		text-align: center;
+		font-size: 13px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		max-width: 100%;
+	}
+	.set-meta {
+		font-size: 11px;
+		font-weight: 700;
+		opacity: 0.7;
+	}
+	.set-remove {
+		position: absolute;
+		top: -9px;
+		right: -9px;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		font-size: 12px;
+		line-height: 1;
+		border-radius: 50%;
+		border: 2px solid var(--ink);
+		background: var(--paper);
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+	.set-card:hover .set-remove,
+	.set-remove:focus-visible {
+		opacity: 1;
 	}
 	.setlist li.placeholder {
-		width: auto;
-		align-self: center;
 		padding: 8px 16px;
 		background: var(--paper);
 		border: 2.5px dashed var(--ink);
 		border-radius: 99px;
 		font-weight: 700;
 		font-size: 14px;
-		animation: none;
-	}
-	.setlist li.current {
-		outline: 3px dashed var(--orange);
-		outline-offset: 4px;
-		border-radius: 12px;
 	}
 	@keyframes pop {
 		from {
 			scale: 0;
+		}
+	}
+
+	.loader {
+		display: grid;
+		place-items: center;
+		align-content: center;
+		gap: 16px;
+		font-family: var(--display);
+		font-weight: 800;
+		font-size: 22px;
+	}
+	.loader p {
+		margin: 0;
+	}
+	.loader-record {
+		filter: drop-shadow(6px 8px 0 #1a142355);
+	}
+	.sleeve-eq {
+		position: absolute;
+		top: 14px;
+		left: 14px;
+		display: inline-flex;
+		align-items: end;
+		gap: 3px;
+		height: 24px;
+		padding: 4px 6px;
+		background: var(--paper);
+		border: 2px solid var(--ink);
+		border-radius: 8px;
+		box-sizing: content-box;
+	}
+	.sleeve-eq i {
+		width: 4px;
+		background: var(--ink);
+		border-radius: 2px;
+		animation: eq 0.5s ease-in-out infinite alternate;
+	}
+	.sleeve-eq i:nth-child(2) {
+		animation-delay: -0.2s;
+	}
+	.sleeve-eq i:nth-child(3) {
+		animation-delay: -0.35s;
+	}
+	.sleeve-eq i:nth-child(4) {
+		animation-delay: -0.1s;
+	}
+	@keyframes eq {
+		from {
+			height: 4px;
+		}
+		to {
+			height: 24px;
 		}
 	}
 

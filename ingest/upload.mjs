@@ -22,10 +22,37 @@ const client = new Client()
 const vectorsDB = new VectorsDB(client);
 
 const file = process.argv[2] ?? '../out/tracks.jsonl';
-const tracks = readFileSync(file, 'utf8')
-	.split('\n')
-	.filter(Boolean)
-	.map((line) => JSON.parse(line));
+// analyse.py appends, so a re-analysed track appears more than once: the last line wins.
+const latest = new Map();
+for (const line of readFileSync(file, 'utf8').split('\n')) {
+	if (!line.trim()) continue;
+	try {
+		const row = JSON.parse(line);
+		latest.set(row.id, row);
+	} catch {
+		console.warn('Skipping a half-written line (is analyse.py still running?)');
+	}
+}
+const tracks = [...latest.values()];
+
+// Energy 1-10: each track's peak moment (loudness + rhythmic density), ranked across
+// the crate. Peak rather than average, so a chill track with a huge drop rates high.
+const peaks = tracks.filter((t) => t.metadata.peak_rms_db !== undefined);
+if (peaks.length) {
+	const z = (/** @type {number[]} */ xs) => {
+		const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+		const sd = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length) || 1;
+		return xs.map((x) => (x - m) / sd);
+	};
+	const loud = z(peaks.map((t) => t.metadata.peak_rms_db));
+	const busy = z(peaks.map((t) => t.metadata.peak_onset));
+	const order = peaks.map((t, i) => ({ t, score: loud[i] + busy[i] })).sort((a, b) => a.score - b.score);
+	order.forEach(({ t }, rank) => {
+		const level = Math.min(10, 1 + Math.floor((rank / order.length) * 10));
+		t.metadata.energy = level;
+		t.metadata.energy_level = String(level);
+	});
+}
 
 const dim = tracks[0].embeddings.length;
 const mean = new Array(dim).fill(0);

@@ -19,16 +19,25 @@ export function compatibleKeys(code, mode = 'loose') {
 }
 
 /**
- * Integer BPMs within ±tolerance% of `bpm`, optionally only up or down (energy).
+ * Integer BPMs within ±tolerance% of `bpm`.
  * @param {number} bpm
  * @param {number} tolerance percent
+ */
+export function mixableBpms(bpm, tolerance = 6) {
+	const out = [];
+	for (let b = Math.ceil(bpm * (1 - tolerance / 100)); b <= Math.floor(bpm * (1 + tolerance / 100)); b++) out.push(String(b));
+	return out;
+}
+
+/**
+ * Energy levels (1-10) to allow next: up keeps the energy level or lifts it, down keeps or drops it.
+ * @param {number | undefined} level the playing track's energy
  * @param {'down' | 'any' | 'up'} energy
  */
-export function mixableBpms(bpm, tolerance = 6, energy = 'any') {
-	const lo = energy === 'up' ? Math.round(bpm) : Math.ceil(bpm * (1 - tolerance / 100));
-	const hi = energy === 'down' ? Math.round(bpm) : Math.floor(bpm * (1 + tolerance / 100));
+export function energyLevels(level, energy) {
+	if (!level || energy === 'any') return null;
 	const out = [];
-	for (let b = lo; b <= hi; b++) out.push(String(b));
+	for (let l = energy === 'up' ? level : 1; l <= (energy === 'down' ? level : 10); l++) out.push(String(l));
 	return out;
 }
 

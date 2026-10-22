@@ -10,7 +10,7 @@ export async function GET({ url }) {
 	const tolerance = Number(url.searchParams.get('tol') ?? 6);
 
 	const unfiltered = url.searchParams.has('all');
-	const result = await nextTracks(id, unfiltered ? { unfiltered, limit: 100 } : { keyMode, energy, tolerance });
+	const result = await nextTracks(id, unfiltered ? { unfiltered, limit: 100 } : { keyMode, energy, tolerance, limit: 20 });
 	if (!result) error(404, 'Track not found');
 	return json(result);
 }

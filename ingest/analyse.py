@@ -8,8 +8,8 @@ Usage:
     python analyse.py ~/Music/crate --out ../out/tracks.jsonl
     python analyse.py ~/Music/crate --range 101-200   # tracks 101 to 200, in sorted path order
 
-Tracks already in the output file are skipped, so runs can be split up or resumed
-without redoing or overwriting anything.
+Tracks already analysed (with the current analysis version) are skipped, so runs can
+be split up or resumed without redoing or overwriting anything.
 """
 
 import argparse
@@ -28,7 +28,9 @@ from transformers import ClapModel, ClapProcessor
 MODEL_ID = "laion/larger_clap_music"
 SAMPLE_RATE = 48_000  # CLAP expects 48 kHz
 WINDOW_SECONDS = 10
-WINDOW_POSITIONS = (0.25, 0.5, 0.75)  # skip DJ intros/outros
+WINDOW_POSITIONS = (0.3, 0.4, 0.5, 0.6)  # the body of the track, past DJ intros
+PEAK_SEARCH = (0.1, 0.9)  # where to look for the drop / biggest moment
+ANALYSIS_VERSION = 2  # bump when the analysis changes, so old results get redone
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".aiff", ".aif", ".m4a", ".ogg"}
 
 # Camelot wheel: (pitch class, is_minor) -> code. C=0 … B=11.
@@ -126,11 +128,39 @@ def estimate_key(y, sr):
     return best[1], best[2]
 
 
-def clap_windows(path, duration):
-    """Load a few 10 s windows at 48 kHz from across the track."""
+def energy_peak(path, duration):
+    """Find the track's biggest 10 s moment (usually the drop) and how big it is.
+
+    Each window is scored on loudness (RMS) and rhythmic density (onset strength),
+    z-scored within the track to pick the peak. The raw values at the peak are kept,
+    so upload can rank energy across the whole crate. A chill track with one huge
+    payoff scores high, because energy is its peak, not its average.
+    """
+    sr, hop = 11_025, 512
+    y, _ = librosa.load(path, sr=sr, mono=True)
+    rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+    onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    n = min(len(rms), len(onset))
+    fps = sr / hop
+    win, step = int(WINDOW_SECONDS * fps), int(2 * fps)
+    lo, hi = int(n * PEAK_SEARCH[0]), max(int(n * PEAK_SEARCH[1]) - win, int(n * PEAK_SEARCH[0]) + 1)
+    starts = list(range(lo, hi, step)) or [0]
+    loud = np.array([20 * np.log10(rms[s : s + win].mean() + 1e-9) for s in starts])
+    busy = np.array([onset[s : s + win].mean() for s in starts])
+    z = lambda a: (a - a.mean()) / (a.std() + 1e-9)
+    best = int(np.argmax(z(loud) + z(busy)))
+    return {
+        "peak_at": round(min(starts[best] / fps, max(0.0, duration - WINDOW_SECONDS)), 1),
+        "peak_rms_db": round(float(loud[best]), 2),
+        "peak_onset": round(float(busy[best]), 3),
+    }
+
+
+def clap_windows(path, duration, peak_at):
+    """Load 10 s windows at 48 kHz: the body of the track, plus its peak moment."""
+    offsets = [max(0.0, duration * pos - WINDOW_SECONDS / 2) for pos in WINDOW_POSITIONS] + [peak_at]
     windows = []
-    for pos in WINDOW_POSITIONS:
-        offset = max(0.0, duration * pos - WINDOW_SECONDS / 2)
+    for offset in offsets:
         y, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True, offset=offset, duration=WINDOW_SECONDS)
         if len(y) >= SAMPLE_RATE:  # skip windows under 1 s
             windows.append(y)
@@ -177,10 +207,12 @@ def analyse(path, root, model, processor):
         parsed, key_source = estimate_key(mid, 22_050), "estimated"
     pitch, minor = parsed
 
+    peak = energy_peak(path, duration)
+
     rel = str(path.relative_to(root))
     return {
         "id": track_id(rel),
-        "embeddings": embed(model, processor, clap_windows(path, duration)).tolist(),
+        "embeddings": embed(model, processor, clap_windows(path, duration, peak["peak_at"])).tolist(),
         "metadata": {
             "title": tags.get("title") or path.stem,
             "artist": tags.get("artist", ""),
@@ -193,7 +225,9 @@ def analyse(path, root, model, processor):
             "duration": round(duration, 1),
             "bpm_source": bpm_source,
             "key_source": key_source,
+            **peak,
             "file": rel,
+            "analysis": ANALYSIS_VERSION,
         },
     }
 
@@ -217,11 +251,17 @@ def main():
     if args.limit:
         files = files[: args.limit]
 
-    # Skip tracks already in the output, so a long run can be resumed.
+    # Skip tracks already analysed with the current version, so a long run can be resumed.
+    # Tracks from an older version are redone; the new line is appended and upload uses
+    # the latest line per track, so nothing earlier is overwritten.
     args.out.parent.mkdir(parents=True, exist_ok=True)
     done = set()
     if args.out.exists():
-        done = {json.loads(line)["id"] for line in args.out.open() if line.strip()}
+        for line in args.out.open():
+            if line.strip():
+                row = json.loads(line)
+                if row["metadata"].get("analysis") == ANALYSIS_VERSION:
+                    done.add(row["id"])
 
     print(f"Loading {MODEL_ID}…")
     model = ClapModel.from_pretrained(MODEL_ID).eval()

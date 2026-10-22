@@ -46,7 +46,9 @@ export function demoTracks() {
 				genre: genre.name,
 				bpm,
 				camelot: genre.keys[Math.floor(rand() * genre.keys.length)],
-				duration: 300 + Math.round(rand() * 180)
+				duration: 300 + Math.round(rand() * 180),
+				energy: 1 + Math.floor(rand() * 10),
+				peak_at: 120 + Math.round(rand() * 120)
 			}
 		});
 	}

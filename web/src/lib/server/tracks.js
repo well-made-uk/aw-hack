@@ -12,11 +12,11 @@ import {
 	TRACKS_COLLECTION_ID
 } from '$app/env/private';
 import { Client, Query, VectorsDB } from 'node-appwrite';
-import { compatibleKeys, mixableBpms } from '#lib/camelot.js';
+import { compatibleKeys, energyLevels, mixableBpms } from '#lib/camelot.js';
 import { demoTracks } from './demo.js';
 
 /**
- * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number, file?: string }} TrackMeta
+ * @typedef {{ title: string, artist: string, genre?: string, bpm: number, camelot: string, key?: string, duration?: number, energy?: number, peak_at?: number, file?: string }} TrackMeta
  * @typedef {{ id: string, embeddings: number[], metadata: TrackMeta }} StoredTrack
  * @typedef {TrackMeta & { id: string, sig: number[] }} Track
  * @typedef {{ tolerance?: number, keyMode?: 'strict' | 'loose' | 'any', energy?: 'down' | 'any' | 'up', limit?: number, unfiltered?: boolean }} NextOptions
@@ -67,24 +67,22 @@ function fromDoc(doc) {
 /** @type {{ at: number, tracks: StoredTrack[] } | null} */
 let cache = null;
 
-/** All tracks, cached for a minute. @returns {Promise<StoredTrack[]>} */
+/** All tracks, cached for five minutes. @returns {Promise<StoredTrack[]>} */
 async function allStored() {
-	if (cache && Date.now() - cache.at < 60_000) return cache.tracks;
+	if (cache && Date.now() - cache.at < 300_000) return cache.tracks;
 	let tracks;
 	if (!vectorsDB) {
 		tracks = demoTracks();
 	} else {
-		tracks = [];
-		/** @type {string | undefined} */
-		let cursor;
-		while (true) {
-			const queries = [Query.limit(100)];
-			if (cursor) queries.push(Query.cursorAfter(cursor));
-			const { documents } = await vectorsDB.listDocuments({ ...ids, queries });
-			tracks.push(...documents.map(fromDoc));
-			if (documents.length < 100) break;
-			cursor = documents[documents.length - 1].$id;
-		}
+		// First page tells us the total; fetch the rest in parallel.
+		const db = vectorsDB;
+		const page = (/** @type {number} */ offset) =>
+			db.listDocuments({ ...ids, queries: [Query.limit(100), Query.offset(offset)] });
+		const first = await page(0);
+		const rest = await Promise.all(
+			Array.from({ length: Math.ceil(first.total / 100) - 1 }, (_, i) => page((i + 1) * 100))
+		);
+		tracks = [first, ...rest].flatMap((r) => r.documents.map(fromDoc));
 	}
 	cache = { at: Date.now(), tracks };
 	return tracks;
@@ -122,7 +120,8 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 
 	// `unfiltered` ranks the whole crate purely by sound, for the crate's "sort by match".
 	const keys = unfiltered ? null : compatibleKeys(playing.metadata.camelot, keyMode);
-	const bpms = unfiltered ? null : mixableBpms(playing.metadata.bpm, tolerance, energy);
+	const bpms = unfiltered ? null : mixableBpms(playing.metadata.bpm, tolerance);
+	const levels = unfiltered ? null : energyLevels(playing.metadata.energy, energy);
 
 	/** @type {{ track: StoredTrack, distance: number }[]} */
 	let results;
@@ -134,6 +133,7 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 		];
 		if (bpms) queries.push(Query.equal('metadata.bpm_int', bpms));
 		if (keys) queries.push(Query.equal('metadata.camelot', keys));
+		if (levels) queries.push(Query.equal('metadata.energy_level', levels));
 		// createQuery sends queries in the body; a 512-d vector is too long for listDocuments' URL.
 		const { documents } = await vectorsDB.createQuery({ ...ids, queries });
 		results = documents.map((doc) => ({ track: fromDoc(doc), distance: doc.$distance }));
@@ -142,6 +142,7 @@ export async function nextTracks(id, { tolerance = 6, keyMode = 'loose', energy 
 			.filter((t) => t.id !== id)
 			.filter((t) => !bpms || bpms.includes(String(Math.round(t.metadata.bpm))))
 			.filter((t) => !keys || keys.includes(t.metadata.camelot))
+			.filter((t) => !levels || levels.includes(String(t.metadata.energy)))
 			.map((t) => ({ track: t, distance: 1 - dot(t.embeddings, playing.embeddings) }))
 			.sort((a, b) => a.distance - b.distance)
 			.slice(0, limit);

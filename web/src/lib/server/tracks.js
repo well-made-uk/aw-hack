@@ -38,25 +38,36 @@ if (live) {
 export const source = live ? 'vectorsdb' : 'demo';
 
 /**
- * A 16-number summary of the 512-d fingerprint, used to draw each track's label art.
- * Averaging fixed chunks keeps it stable: tracks that sound alike get similar art.
- * @param {number[]} vec
+ * 16-number summaries of each fingerprint, used to draw label art. Each number is the vector's
+ * projection onto a fixed random direction, ranked across the whole crate and spread over -1..1.
+ * Ranking uses the full range evenly (so labels vary a lot), while tracks that sound alike still
+ * land close together (so they look alike).
+ * @param {StoredTrack[]} tracks
  */
-function signature(vec) {
-	const size = vec.length / 16;
-	const sig = [];
-	for (let i = 0; i < 16; i++) {
-		let sum = 0;
-		for (let j = i * size; j < (i + 1) * size; j++) sum += vec[j];
-		sig.push(sum / Math.sqrt(size));
+function signatures(tracks) {
+	const dim = tracks[0]?.embeddings.length ?? 0;
+	// Seeded PRNG (mulberry32), so labels stay the same between runs.
+	let seed = 0x5eed;
+	const rand = () => {
+		seed = (seed + 0x6d2b79f5) | 0;
+		let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+		x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+		return ((x ^ (x >>> 14)) >>> 0) / 4294967296 - 0.5;
+	};
+	const dirs = Array.from({ length: 16 }, () => Array.from({ length: dim }, rand));
+	const proj = tracks.map((t) => dirs.map((d) => d.reduce((sum, v, i) => sum + v * t.embeddings[i], 0)));
+	const ranked = proj.map(() => /** @type {number[]} */ ([]));
+	for (let k = 0; k < 16; k++) {
+		const order = proj.map((p, i) => [p[k], i]).sort((a, b) => a[0] - b[0]);
+		order.forEach(([, i], rank) => (ranked[i][k] = tracks.length > 1 ? (rank / (tracks.length - 1)) * 2 - 1 : 0));
 	}
-	return sig;
+	return new Map(tracks.map((t, i) => [t.id, ranked[i]]));
 }
 
 /** @param {StoredTrack} t @returns {Track} */
 function toTrack(t) {
 	const { file, ...meta } = t.metadata; // file paths stay on the server
-	return { id: t.id, ...meta, sig: signature(t.embeddings) };
+	return { id: t.id, ...meta, sig: cache?.sigs.get(t.id) ?? Array(16).fill(0) };
 }
 
 /** @param {any} doc @returns {StoredTrack} */
@@ -64,7 +75,7 @@ function fromDoc(doc) {
 	return { id: doc.$id, embeddings: doc.embeddings, metadata: doc.metadata };
 }
 
-/** @type {{ at: number, tracks: StoredTrack[] } | null} */
+/** @type {{ at: number, tracks: StoredTrack[], sigs: Map<string, number[]> } | null} */
 let cache = null;
 
 /** All tracks, cached for five minutes. @returns {Promise<StoredTrack[]>} */
@@ -84,7 +95,7 @@ async function allStored() {
 		);
 		tracks = [first, ...rest].flatMap((r) => r.documents.map(fromDoc));
 	}
-	cache = { at: Date.now(), tracks };
+	cache = { at: Date.now(), tracks, sigs: signatures(tracks) };
 	return tracks;
 }
 

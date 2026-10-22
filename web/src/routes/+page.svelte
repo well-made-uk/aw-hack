@@ -269,6 +269,18 @@
 		crateOpen = false;
 	}
 
+	// The logo's record: a fixed label, picked to look good.
+	const LOGO_SIG = [-0.75, -0.3, 0, 0, 0, 0.1, 0.4, 0.5, 0.2, 0.3, 0, 0, 0, 0, 0, 0];
+
+	// Keep the newest track in view as the set grows.
+	/** @type {HTMLOListElement | undefined} */
+	let setEl = $state();
+	$effect(() => {
+		fullSet.length;
+		const el = setEl;
+		if (el) requestAnimationFrame(() => el.scrollTo({ left: el.scrollWidth, behavior: 'smooth' }));
+	});
+
 	// Export: the set so far, with the track on deck last.
 	let exportOpen = $state(false);
 	let copied = $state(false);
@@ -478,7 +490,10 @@
 
 <div class="page">
 	<header>
-		<h1>Next<span>Track</span></h1>
+		<h1 class="logo" aria-label="Next Track">
+			<span class="logo-mark" aria-hidden="true"><Record sig={LOGO_SIG} size={54} keyCode="NT" /></span>
+			<span class="logo-next">Next</span><span class="logo-track">Track</span>
+		</h1>
 		<span class="source" class:live={data.source === 'vectorsdb'}>
 			{data.source === 'vectorsdb' ? '● Live from VectorsDB' : 'Demo crate'}
 		</span>
@@ -562,7 +577,7 @@
 							onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
 							onpointerleave={hoverOff}
 						>
-							<Record sig={playing.sig} size={deckR * 2} spinning={!deckPaused} title={playing.title} />
+							<Record sig={playing.sig} energy={playing.energy} keyCode={playing.camelot} size={deckR * 2} spinning={!deckPaused} title={playing.title} />
 						</div>
 					{/key}
 
@@ -599,7 +614,7 @@
 
 	<footer class="setlist">
 		<div class="set-head">
-			<span class="kicker">Your set</span>
+			<span class="kicker">Your set{#if fullSet.length}<span class="set-count">{fullSet.length} {fullSet.length === 1 ? 'track' : 'tracks'}</span>{/if}</span>
 			<button class="export" disabled={!fullSet.length} onclick={() => (exportOpen = !exportOpen)} aria-expanded={exportOpen}>
 				Export ↑
 			</button>
@@ -616,7 +631,7 @@
 				</div>
 			{/if}
 		</div>
-		<ol>
+		<ol bind:this={setEl}>
 			{#each setlist as t, i (t.id + i)}
 				<li
 					class="set-card"
@@ -643,7 +658,7 @@
 					ondragend={() => (dragFrom = dragOver = null)}
 				>
 					<span class="set-art" role="img" aria-label={t.title}>
-						<Record sig={t.sig} size={56} spinning={previewId === t.id} />
+						<Record sig={t.sig} energy={t.energy} keyCode={t.camelot} size={56} spinning={previewId === t.id} />
 					</span>
 					<span class="set-text">
 						<span class="set-n">{i + 1}</span>
@@ -660,7 +675,7 @@
 					onpointerleave={hoverOff}
 				>
 					<span class="set-art" role="img" aria-label={playing.title}>
-						<Record sig={playing.sig} size={56} spinning />
+						<Record sig={playing.sig} energy={playing.energy} keyCode={playing.camelot} size={56} spinning />
 					</span>
 					<span class="set-text">
 						<span class="set-n">On deck</span>
@@ -709,7 +724,7 @@
 							onpointerenter={() => hover(t.id)}
 							onpointerleave={() => hover(null)}
 						>
-							<span class="peek"><Record sig={t.sig} size={150} spinning={previewId === t.id} /></span>
+							<span class="peek"><Record sig={t.sig} energy={t.energy} keyCode={t.camelot} size={150} spinning={previewId === t.id} /></span>
 							<span class="sleeve-title">{t.title}</span>
 							<span class="sleeve-meta">{t.artist}</span>
 							<span class="sleeve-tags">{Math.round(t.bpm)} · {t.camelot}{t.energy ? ` · ⚡${t.energy}` : ''}</span>
@@ -760,18 +775,36 @@
 		align-items: center;
 		gap: 18px;
 	}
-	h1 {
+	.logo {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 0;
 		font-family: var(--display);
 		font-weight: 900;
-		font-size: clamp(36px, 5vw, 64px);
-		margin: 0;
-		letter-spacing: -2px;
+		font-size: clamp(30px, 3.6vw, 48px);
+		letter-spacing: -1.5px;
 		line-height: 1;
 	}
-	h1 span {
-		color: var(--orange);
-		-webkit-text-stroke: 2px var(--ink);
-		margin-left: 6px;
+	.logo-mark {
+		display: block;
+		animation: spin-slow 12s linear infinite;
+	}
+	@keyframes spin-slow {
+		to {
+			rotate: 360deg;
+		}
+	}
+	/* "Track" sits on a tilted sticker, in the same hard-shadow style as the rest of the page. */
+	.logo-track {
+		margin-left: 4px;
+		padding: 2px 12px 6px;
+		color: var(--paper);
+		background: var(--orange);
+		border: 3px solid var(--ink);
+		border-radius: 14px;
+		box-shadow: 4px 4px 0 var(--ink);
+		rotate: -3deg;
 	}
 	.source {
 		font-weight: 700;
@@ -1055,6 +1088,16 @@
 	}
 	.set-head .kicker {
 		margin: 0;
+		display: grid;
+		gap: 2px;
+	}
+	.set-count {
+		font-family: 'Space Grotesk', sans-serif;
+		font-weight: 700;
+		font-size: 12px;
+		letter-spacing: 0;
+		text-transform: none;
+		opacity: 0.7;
 	}
 	.export {
 		font-weight: 800;

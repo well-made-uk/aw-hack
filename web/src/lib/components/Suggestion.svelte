@@ -70,7 +70,7 @@
 	aria-label="Play {track.title} by {track.artist}, {Math.round(track.match * 100)}% match"
 >
 	<span class="bob" style="animation-delay:{-(delay % 2000)}ms">
-		<Record sig={track.sig} {size} spinning={previewing} />
+		<Record sig={track.sig} energy={track.energy} keyCode={track.camelot} {size} spinning={previewing} />
 	</span>
 </button>
 

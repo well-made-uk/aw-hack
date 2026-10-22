@@ -1,8 +1,8 @@
 <script>
 	import LabelArt from './LabelArt.svelte';
 
-	/** @type {{ sig: number[], size?: number, spinning?: boolean, title?: string }} */
-	let { sig, size = 120, spinning = false, title = '' } = $props();
+	/** @type {{ sig: number[], size?: number, spinning?: boolean, title?: string, energy?: number, keyCode?: string }} */
+	let { sig, size = 120, spinning = false, title = '', energy, keyCode } = $props();
 
 	const uid = $props.id();
 </script>
@@ -16,10 +16,10 @@
 	<!-- sheen -->
 	<path d="M -70 -55 A 90 90 0 0 1 -20 -88" fill="none" stroke="#ffffff22" stroke-width="10" stroke-linecap="round" />
 	<path d="M 70 55 A 90 90 0 0 1 20 88" fill="none" stroke="#ffffff14" stroke-width="8" stroke-linecap="round" />
-	<LabelArt {sig} r={44} />
+	<LabelArt {sig} r={50} {energy} {keyCode} />
 	{#if title}
 		<defs>
-			<path id="arc-{uid}" d="M 0 -51 A 51 51 0 1 1 -0.1 -51" />
+			<path id="arc-{uid}" d="M 0 -58 A 58 58 0 1 1 -0.1 -58" />
 		</defs>
 		<text class="arc-title">
 			<textPath href="#arc-{uid}" startOffset="0">{title.toUpperCase()} • {title.toUpperCase()} •</textPath>

@@ -277,9 +277,9 @@ def main():
     with args.out.open("a") as out:
         for i, path in enumerate(files, first):
             if track_id(str(path.relative_to(root))) in done:
-                print(f"[{i}/{total}] {path.name} (already analysed)")
+                print(f"[{i}/{total}] {path.name} (already analysed)", flush=True)
                 continue
-            print(f"[{i}/{total}] {path.name}")
+            print(f"[{i}/{total}] {path.name}", flush=True)
             try:
                 out.write(json.dumps(analyse(path, root, model, processor)) + "\n")
                 out.flush()

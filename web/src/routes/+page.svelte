@@ -463,6 +463,8 @@
 					class:drag-over={dragOver === i && dragFrom !== i}
 					class:dragging={dragFrom === i}
 					draggable="true"
+					onpointerenter={(e) => dragFrom === null && hoverOn(t, e.currentTarget)}
+					onpointerleave={hoverOff}
 					ondragstart={(e) => {
 						dragFrom = i;
 						card = null;
@@ -480,13 +482,7 @@
 					}}
 					ondragend={() => (dragFrom = dragOver = null)}
 				>
-					<span
-						class="set-art"
-						role="img"
-						aria-label={t.title}
-						onpointerenter={(e) => hoverOn(t, e.currentTarget)}
-						onpointerleave={hoverOff}
-					>
+					<span class="set-art" role="img" aria-label={t.title}>
 						<Record sig={t.sig} size={56} spinning={previewId === t.id} />
 					</span>
 					<span class="set-text">
@@ -498,14 +494,12 @@
 				</li>
 			{/each}
 			{#if playing}
-				<li class="set-card on-deck">
-					<span
-						class="set-art"
-						role="img"
-						aria-label={playing.title}
-						onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
-						onpointerleave={hoverOff}
-					>
+				<li
+					class="set-card on-deck"
+					onpointerenter={(e) => hoverOn(playing, e.currentTarget, { label: 'On deck' })}
+					onpointerleave={hoverOff}
+				>
+					<span class="set-art" role="img" aria-label={playing.title}>
 						<Record sig={playing.sig} size={56} spinning />
 					</span>
 					<span class="set-text">
